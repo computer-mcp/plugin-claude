@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Bounded Claude Code execution and event recovery over stdio MCP."""
+import sys
+if sys.version_info < (3, 11):
+    raise SystemExit("This plugin requires Python 3.11+ on the host launch PATH")
+
+import argparse
+from collections import OrderedDict
+import os
+import threading
+import time
+import uuid
+
+from plugin_runtime import (EventBuffer, Failure, Job, MCPServer, Process, Tool,
+    decoded, encoded, integer_schema, load_package, resolve_executable, schema,
+    text_schema, validate, verify_version)
+
+MANIFEST, TREE = load_package(__file__)
+VERSION = MANIFEST['version']
+# Reuse the package's native parameter schemas; MCP adds execution controls only.
+RUN_FIELDS = {p['name']:dict(p['schema'],description=p.get('description','')) for p in TREE['commands'][0]['parameters']}
+RUN_FIELDS['permission_mode']['default'] = 'dontAsk'
+RUN_FIELDS.update({'timeout_seconds':integer_schema(1,1800,600),'max_events':integer_schema(1,256,128)})
+RUN_SCHEMA = schema(RUN_FIELDS,['prompt'])
+
+
+def build_command(executable,args):
+    validate(args,RUN_SCHEMA)
+    resume, continuous = args.get('resume_session_id'), args.get('continue_previous',False)
+    session_id = args.get('session_id')
+    no_persistence = args.get('no_session_persistence',False)
+    if sum(bool(x) for x in (resume,continuous,session_id))>1:
+        raise Failure('invalid_arguments','Select only one of resume, continue or a new session ID')
+    if no_persistence and (resume or continuous):
+        raise Failure('invalid_arguments','A persisted session cannot be resumed with persistence disabled')
+    if session_id:
+        try: uuid.UUID(session_id)
+        except ValueError as error:
+            raise Failure('invalid_arguments','session_id must be a UUID') from error
+    mode = args.get('permission_mode','dontAsk')
+    command = [executable,'-p','--output-format','stream-json','--verbose','--include-partial-messages','--permission-mode',mode]
+    for field,flag in [('model','--model'),('resume_session_id','--resume'),('session_id','--session-id'),('max_budget_usd','--max-budget-usd'),('effort','--effort'),('append_system_prompt','--append-system-prompt')]:
+        if field in args:
+            command.append(flag+'='+str(args[field]))
+    for field,flag in [('continue_previous','--continue'),('no_session_persistence','--no-session-persistence')]:
+        if args.get(field,False): command.append(flag)
+    command.extend(['--',args['prompt']])
+    return command, mode
+
+
+class Run:
+    def __init__(self,identifier,args):
+        self.id, self.arguments = identifier, args
+        self.job = Job()
+        self.done = threading.Event()
+        self.lock = threading.RLock()
+        self.events = EventBuffer()
+        self.state = 'starting'
+        self.value = None
+        self.session_id = args.get('resume_session_id') or args.get('session_id')
+        self.process = None
+        self.thread = None
+        self.created_at = time.time()
+    def info(self):
+        with self.lock:
+            return {'run_id':self.id,'state':self.state,'session_id':self.session_id,'created_at':self.created_at,'completed':self.done.is_set()}
+    def work(self,executable):
+        process = None
+        deadline = time.monotonic()+self.arguments.get('timeout_seconds',600)
+        try:
+            command, mode = build_command(executable,self.arguments)
+            verify_version(executable,TREE,self.job,os.getcwd())
+            self.job.check()
+            process = Process(command,os.getcwd())
+            with self.lock:
+                self.process, self.state = process, 'running'
+            process.end_input()
+            final = None
+            while True:
+                raw = process.read(deadline,self.job)
+                if raw is None: break
+                try: event = decoded(raw)
+                except (ValueError,UnicodeError,RecursionError) as error:
+                    raise Failure('invalid_vendor_response','Claude emitted invalid stream-json') from error
+                if not isinstance(event,dict):
+                    raise Failure('invalid_vendor_response','A Claude stream-json event must be an object')
+                self.events.append(event)
+                if isinstance(event.get('session_id'),str) and event['session_id']:
+                    with self.lock: self.session_id = event['session_id']
+                if event.get('type')=='result':
+                    if final is not None:
+                        raise Failure('invalid_vendor_response','Claude emitted more than one final result')
+                    if len(encoded(event))>131072:
+                        raise Failure('result_too_large','Claude final result exceeds 128 KiB; no success was inferred from truncated data')
+                    if type(event.get('is_error')) is not bool:
+                        raise Failure('invalid_vendor_response','Claude result lacks a Boolean is_error field')
+                    final = event
+            code = process.finish(deadline,self.job)
+            if final is None:
+                raise Failure('vendor_failed',f'Claude exited with status {code} without a final result event')
+            failed = final['is_error'] or code!=0
+            with self.lock:
+                self.value = {'run_id':self.id,'session_id':self.session_id,'result':final.get('result'),'subtype':final.get('subtype'),'is_error':failed,'total_cost_usd':final.get('total_cost_usd'),'permission_mode':mode,'exit_code':code,'final_event':final}
+                self.state = 'failed' if failed else 'completed'
+        except Failure as error:
+            with self.lock:
+                self.state = 'cancelled' if error.code=='cancelled' else 'failed'
+                self.value = {'run_id':self.id,'session_id':self.session_id,'is_error':True,'error':{'code':error.code,'message':str(error)}}
+        except Exception:
+            with self.lock:
+                self.state = 'failed'
+                self.value = {'run_id':self.id,'session_id':self.session_id,'is_error':True,'error':{'code':'internal_error','message':'Claude execution failed; no automatic retry was attempted'}}
+        finally:
+            if process:
+                try: process.close()
+                except Failure as error:
+                    with self.lock:
+                        self.state = 'failed'
+                        self.value = {'run_id':self.id,'session_id':self.session_id,'is_error':True,'error':{'code':error.code,'message':str(error)}}
+            # A completed result is visible only after owned process cleanup.
+            self.arguments = {}
+            self.done.set()
+    def result(self,limit=128):
+        with self.lock:
+            if not self.done.is_set(): return self.info()
+            value = dict(self.value)
+        page = self.events.page(0,limit)
+        return {**value,'state':self.state,'completed':True,'events':[row['event'] for row in page['events']],'event_page':{k:v for k,v in page.items() if k!='events'},'events_truncated':page['has_more'] or page['missed_events'] or page['omitted_events']>0}
+
+
+class Claude:
+    def __init__(self,executable):
+        self.executable = executable
+        self.runs = OrderedDict()
+        self.lock = threading.RLock()
+        self.stopping = False
+    def start(self,args,_job):
+        # Validate before reserving a run or executing a native version probe.
+        _job.check()
+        validate(args,RUN_SCHEMA)
+        executable = resolve_executable(self.executable,'CLAUDE_CODE_EXECUTABLE','claude')
+        build_command(executable,args)
+        run = Run(uuid.uuid4().hex,dict(args))
+        with self.lock:
+            if self.stopping or sum(not x.done.is_set() for x in self.runs.values())>=4:
+                raise Failure('capacity','Concurrent Claude run capacity reached or adapter is shutting down')
+            while len(self.runs)>=32:
+                old = next((key for key,value in self.runs.items() if value.done.is_set()),None)
+                if old is None: raise Failure('capacity','Run result capacity reached')
+                del self.runs[old]
+            self.runs[run.id] = run
+            run.thread = threading.Thread(target=run.work,args=(executable,))
+            run.thread.start()
+        return run.info()
+    def get(self,identifier):
+        with self.lock: run = self.runs.get(identifier)
+        if run is None:
+            raise Failure('unknown_run','Run belongs to another connection or its completed retention window has expired')
+        return run
+    def once(self,args,job):
+        run = self.get(self.start(args,job)['run_id'])
+        while not run.done.wait(.05):
+            if job.cancelled.is_set(): run.job.cancel()
+        return run.result(args.get('max_events',128))
+    def result(self,args,_job):
+        return self.get(args['run_id']).result(args.get('max_events',128))
+    def events(self,args,_job):
+        run = self.get(args['run_id'])
+        return {**run.info(),**run.events.page(args.get('after_cursor',0),args.get('limit',128),args.get('max_bytes',196608))}
+    def cancel(self,args,_job):
+        run = self.get(args['run_id'])
+        if not run.done.is_set(): run.job.cancel()
+        return {**run.info(),'cancel_requested':not run.done.is_set()}
+    def listing(self,_args,_job):
+        with self.lock: runs = list(self.runs.values())
+        return {'runs':[r.info() for r in runs]}
+    def shutdown(self):
+        with self.lock:
+            self.stopping = True
+            runs = list(self.runs.values())
+        for run in runs: run.job.cancel()
+        for run in runs:
+            if run.thread: run.thread.join(timeout=5)
+    def tools(self):
+        identifier = text_schema(64)
+        return [
+            Tool('claude.run','Run Claude Code print mode to completion; preserve its final result, error flag, and bounded events.',RUN_SCHEMA,self.once),
+            Tool('claude.run.start','Start a Claude Code request; returns an adapter-local run ID immediately. Native session IDs remain separate.',RUN_SCHEMA,self.start),
+            Tool('claude.run.list','List running and retained completed requests belonging to this adapter connection.',schema({}),self.listing),
+            Tool('claude.run.result','Read completion status and result without restarting or replaying the native command.',schema({'run_id':identifier,'max_events':integer_schema(1,256,128)},['run_id']),self.result),
+            Tool('claude.run.events','Read byte-bounded native stream-json events using a run-local cursor.',schema({'run_id':identifier,'after_cursor':integer_schema(0,2**53-1,0),'limit':integer_schema(1,256,128),'max_bytes':integer_schema(1024,196608,196608)},['run_id']),self.events),
+            Tool('claude.run.cancel','Cancel the exact owned Claude run; subsequent result inspection confirms termination. No native session is deleted.',schema({'run_id':identifier},['run_id']),self.cancel),
+        ]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--version',action='version',version=VERSION)
+    parser.add_argument('--executable',help='Absolute user-owned Claude Code path; otherwise CLAUDE_CODE_EXECUTABLE or PATH')
+    args = parser.parse_args()
+    claude = Claude(args.executable)
+    MCPServer('claude-mcp-adapter',VERSION,claude.tools(),claude.shutdown).serve()
+
+
+if __name__=='__main__': main()
