@@ -1,6 +1,7 @@
 id = "claude"
 name = "Claude Code"
 version = "0.1.0"
+repository = "https://github.com/computer-mcp/plugin-claude"
 description = "Claude Code headless CLI automation plus a streaming CLI-to-MCP adapter."
 
 [[dependencies]]
@@ -12,7 +13,7 @@ documentation = "https://docs.anthropic.com/en/docs/claude-code/cli-reference"
 [[dependencies]]
 id = "python-runtime"
 commands = ["python3"]
-instructions = "Provide Python 3.11 or newer on the Computer MCP launch PATH. The plugin does not install Python."
+instructions = "Provide Python 3.13 or newer on the Computer MCP launch PATH. The plugin does not install Python."
 documentation = "https://www.python.org/downloads/"
 
 [[cli]]

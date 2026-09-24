@@ -12,7 +12,7 @@ The adapter provides `claude.run`, `claude.run.start`, `claude.run.list`, `claud
 
 ## Use and verify
 
-The external `claude` executable, Python 3.11+ and vendor credentials are user-owned. Install neither through this plugin. Configure the two contributions using the [installation guide](Documentation/Reference/Installation.md) and `Examples/settings.json`.
+The external `claude` executable, Python 3.13+ and vendor credentials are user-owned. Install neither through this plugin. Configure the two contributions using the [installation guide](Documentation/Reference/Installation.md) and `Examples/settings.json`.
 
 ```sh
 python3 -m unittest discover -s Tests -p 'test_*.py' -v
