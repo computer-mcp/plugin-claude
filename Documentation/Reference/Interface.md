@@ -8,6 +8,16 @@ The native version assertion runs before each adapter execution and each host-pr
 
 The adapter implements newline-delimited MCP JSON-RPC initialization, tools/list, tools/call, ping and cancellation. Supported MCP dates are 2024-11-05, 2025-03-26 and 2025-06-18. Unsupported proposals receive a supported date, not an unimplemented echo. Tool schemas describe accepted arguments. Tool results use `structuredContent.result`; `isError` indicates a failed operation, distinct from a JSON-RPC protocol error.
 
+## Host risk metadata
+
+Every MCP tool declares `_meta["io.github.computer-mcp/risk"]`. Model execution
+and continuation declare `full-shell`: native permission defaults are not a
+host-enforced sandbox. Catalog, result, event and pending-request inspection
+declare `read-only`. Cancellation and owned-process retirement declare
+`destructive`. The host applies these as minimum classifications, intersects
+its own grants, and retains approval authority. Standard MCP annotations remain
+hints rather than permissions.
+
 ## Tools
 
 | Native MCP tool | Behavior |

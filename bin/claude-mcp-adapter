@@ -205,12 +205,12 @@ class Claude:
     def tools(self):
         identifier = text_schema(64)
         return [
-            Tool('claude.run','Run Claude Code print mode to completion; preserve its final result, error flag, and bounded events.',RUN_SCHEMA,self.once),
-            Tool('claude.run.start','Start a Claude Code request; returns an adapter-local run ID immediately. Native session IDs remain separate.',RUN_SCHEMA,self.start),
-            Tool('claude.run.list','List running and retained completed requests belonging to this adapter connection.',schema({}),self.listing),
-            Tool('claude.run.result','Read completion status and result without restarting or replaying the native command.',schema({'run_id':identifier,'max_events':integer_schema(1,256,128)},['run_id']),self.result),
-            Tool('claude.run.events','Read byte-bounded native stream-json events using a run-local cursor.',schema({'run_id':identifier,'after_cursor':integer_schema(0,2**53-1,0),'limit':integer_schema(1,256,128),'max_bytes':integer_schema(1024,196608,196608)},['run_id']),self.events),
-            Tool('claude.run.cancel','Cancel the exact owned Claude run; subsequent result inspection confirms termination. No native session is deleted.',schema({'run_id':identifier},['run_id']),self.cancel),
+            Tool('claude.run','Run Claude Code print mode to completion; preserve its final result, error flag, and bounded events.',RUN_SCHEMA,self.once,risk='full-shell'),
+            Tool('claude.run.start','Start a Claude Code request; returns an adapter-local run ID immediately. Native session IDs remain separate.',RUN_SCHEMA,self.start,risk='full-shell'),
+            Tool('claude.run.list','List running and retained completed requests belonging to this adapter connection.',schema({}),self.listing,risk='read-only'),
+            Tool('claude.run.result','Read completion status and result without restarting or replaying the native command.',schema({'run_id':identifier,'max_events':integer_schema(1,256,128)},['run_id']),self.result,risk='read-only'),
+            Tool('claude.run.events','Read byte-bounded native stream-json events using a run-local cursor.',schema({'run_id':identifier,'after_cursor':integer_schema(0,2**53-1,0),'limit':integer_schema(1,256,128),'max_bytes':integer_schema(1024,196608,196608)},['run_id']),self.events,risk='read-only'),
+            Tool('claude.run.cancel','Cancel the exact owned Claude run; subsequent result inspection confirms termination. No native session is deleted.',schema({'run_id':identifier},['run_id']),self.cancel,risk='destructive'),
         ]
 
 
