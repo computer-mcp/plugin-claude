@@ -9,6 +9,12 @@ Discover actual host tool names/schemas and select an authorized workspace. Use 
 
 For observable execution, use `claude.run.start`, retain run_id, page through `claude.run.events`, and inspect `claude.run.result`. Use `claude.run` only when waiting for the complete operation is appropriate. `claude.run.cancel` targets an exact run; inspect its subsequent result to confirm settlement. Cancelling the original start request after it returned does not cancel the detached run.
 
+After saving the needed result, events and native session ID, use
+`claude.run.release` to discard the retained adapter handle. Reading a result
+does not release it. Release refuses active work or unconfirmed cleanup and
+never deletes the native conversation. Unreleased completed results remain
+available until bounded retention eviction or adapter shutdown.
+
 Adapter run_id and native session_id are different. Resume with an explicit native resume_session_id, continue_previous, or create a session_id; do not combine them. The adapter's in-memory handles are invalid after process replacement, but native persisted conversations remain under vendor control. Unknown execution outcome does not authorize replaying a prompt.
 
 permission_mode defaults to dontAsk. Use plan or acceptEdits only for the requested native behavior. The adapter does not expose bypass modes or interactive permission brokerage. dontAsk is not a filesystem sandbox: existing native configuration still applies. Host Full Shell never silently changes Claude permissions.

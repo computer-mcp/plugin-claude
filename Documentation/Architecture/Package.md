@@ -6,4 +6,11 @@ This repository owns the Claude Code CLI description and print/stream-json-to-MC
 
 `bin/plugin_runtime.py` is this package's private standard-library runtime for bounded MCP I/O, validation, process supervision and retention. It is shipped with the plugin, not loaded from another plugin or host implementation module. Python 3.13+ must be available on the launch PATH. A separate supervisor lifeline and positive cleanup receipt distinguish process exit from confirmed cleanup. These are internal process mechanisms, not a new host contribution type.
 
+The ordinary MCP work resource projects these same run owners, including
+pending startup, uncertain cleanup and retained completed results. Correlation
+is bound at run creation and is not an authorization grant. Confirmed worker
+and process cleanup are prerequisites for result eviction or explicit release.
+Reading a result has no release side effect. The adapter bounds and versions
+complete snapshots; the host owns configuration generations and routing.
+
 The documented headless CLI is the selected upstream interface; the full Agent SDK's interactive callbacks and hosted Managed Agents are not substituted or claimed. Tests use deterministic peers and controlled process trees. Scripts validate real native version/help, deterministic archives and the unchanged host in isolated standalone mode. Authenticated backend execution and production activation require separate evidence.

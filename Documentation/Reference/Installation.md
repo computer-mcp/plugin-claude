@@ -39,6 +39,13 @@ python3 Scripts/validate_host.py \
 
 Replace `PLUGIN.zip` with the package's actual archive name. This uses a temporary directory and the installed host's archive worker and standalone MCP entrypoint. It does not connect to the production App's control socket or database. Vendor tool execution is replaced with inert fixtures; the native version/help check is a separate command. A new evidence directory is required to avoid overwriting an earlier run.
 
+For a separately built candidate host that supports the ordinary MCP work
+resource, add `--require-work-ownership`. This also verifies ownership during
+background execution, retained cancelled/completed results, and explicit release
+on the same connection. The candidate host runs only with isolated configuration
+and state. This option is not an authenticated-model or production activation
+check.
+
 ## Result interpretation
 
 Fixture success proves adapter protocol/ownership behavior against the tested peer, not a real account or model. A native version/help check proves the installed command surface, not backend availability. An unchanged-host isolated catalog/call check proves interoperability for that tested configuration; it is not production installation or public release evidence. Keep these results separate in delivery receipts.

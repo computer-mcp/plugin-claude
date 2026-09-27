@@ -64,8 +64,9 @@ def checked_final(event):
 
 
 class Run:
-    def __init__(self,identifier,args):
+    def __init__(self,identifier,args,work_invocation=None):
         self.id, self.arguments = identifier, args
+        self.work_invocation = work_invocation
         self.job = Job()
         self.done = threading.Event()
         self.lock = threading.RLock()
@@ -75,17 +76,38 @@ class Run:
         self.final_event = None
         self.session_id = args.get('resume_session_id') or args.get('session_id')
         self.process = None
+        self.version_process = None
+        self.cleanup_confirmed = False
+        self.cleanup_failure = None
         self.thread = None
         self.created_at = time.time()
     def info(self):
         with self.lock:
-            return {'run_id':self.id,'state':self.state,'session_id':self.session_id,'created_at':self.created_at,'completed':self.done.is_set()}
+            return {'run_id':self.id,'state':self.state,'session_id':self.session_id,'created_at':self.created_at,'completed':self.done.is_set(),'cleanup_confirmed':self.cleanup_confirmed}
+    def retain_version_process(self,process):
+        with self.lock: self.version_process = process
+    def execution_finished(self):
+        with self.lock:
+            return self.done.is_set() and self.cleanup_confirmed and not (self.thread and self.thread.is_alive())
+    def work_resource(self):
+        with self.lock:
+            return {'kind':'claude.run','id':self.id,'acquired_by':self.work_invocation,
+                    'state':'uncertain' if self.cleanup_failure is not None else 'active'}
+    def record_cleanup_failure(self,error):
+        with self.lock:
+            if self.cleanup_failure is None:
+                self.cleanup_failure = error if isinstance(error,Failure) else Failure('cleanup_unconfirmed','Owned process cleanup could not be confirmed')
+            self.state = 'failed'
+            failure = {'code':self.cleanup_failure.code,'message':str(self.cleanup_failure)}
+            self.value = {**(self.value or {}),'run_id':self.id,'session_id':self.session_id,'is_error':True,'cleanup_error':failure}
+            self.value.setdefault('error',failure)
     def work(self,executable):
         process = None
         deadline = time.monotonic()+self.arguments.get('timeout_seconds',600)
         try:
             command, mode = build_command(executable,self.arguments)
-            verify_version(executable,TREE,self.job,os.getcwd())
+            verify_version(executable,TREE,self.job,os.getcwd(),self.retain_version_process)
+            with self.lock: self.version_process = None
             self.job.check()
             process = Process(command,os.getcwd())
             with self.lock:
@@ -121,22 +143,20 @@ class Run:
             with self.lock:
                 self.state = 'cancelled' if error.code=='cancelled' else 'failed'
                 self.value = {'run_id':self.id,'session_id':self.session_id,'is_error':True,'error':{'code':error.code,'message':str(error)}}
+            if error.code=='cleanup_unconfirmed': self.record_cleanup_failure(error)
         except Exception:
             with self.lock:
                 self.state = 'failed'
                 self.value = {'run_id':self.id,'session_id':self.session_id,'is_error':True,'error':{'code':'internal_error','message':'Claude execution failed; no automatic retry was attempted'}}
         finally:
-            if process:
-                try: process.close()
-                except Failure as error:
-                    with self.lock:
-                        self.state = 'failed'
-                        failure = {'code':error.code,'message':str(error)}
-                        self.value = {**(self.value or {}),'run_id':self.id,'session_id':self.session_id,'is_error':True,'cleanup_error':failure}
-                        self.value.setdefault('error',failure)
-            # A completed result is visible only after owned process cleanup.
-            self.arguments = {}
-            self.done.set()
+            for owned in (process,self.version_process):
+                if owned is not None:
+                    try: owned.close()
+                    except Exception as error: self.record_cleanup_failure(error)
+            with self.lock:
+                self.cleanup_confirmed = self.cleanup_failure is None
+                self.arguments = {}
+                self.done.set()
     def result(self,limit=128):
         with self.lock:
             if not self.done.is_set(): return self.info()
@@ -145,7 +165,7 @@ class Run:
                 value.update(final_event=self.final_event,result=self.final_event.get('result'),
                              subtype=self.final_event['subtype'],total_cost_usd=self.final_event.get('total_cost_usd'))
         page = self.events.page(0,limit)
-        return {**value,'state':self.state,'completed':True,'events':[row['event'] for row in page['events']],'event_page':{k:v for k,v in page.items() if k!='events'},'events_truncated':page['has_more'] or page['missed_events'] or page['omitted_events']>0}
+        return {**value,'state':self.state,'completed':True,'cleanup_confirmed':self.cleanup_confirmed,'events':[row['event'] for row in page['events']],'event_page':{k:v for k,v in page.items() if k!='events'},'events_truncated':page['has_more'] or page['missed_events'] or page['omitted_events']>0}
 
 
 class Claude:
@@ -160,23 +180,26 @@ class Claude:
         validate(args,RUN_SCHEMA)
         executable = resolve_executable(self.executable,'CLAUDE_CODE_EXECUTABLE','claude')
         build_command(executable,args)
-        run = Run(uuid.uuid4().hex,dict(args))
+        run = Run(uuid.uuid4().hex,dict(args),_job.work_invocation)
         with self.lock:
             _job.check()
-            if self.stopping or sum(not x.done.is_set() for x in self.runs.values())>=4:
+            if self.stopping or sum(not x.execution_finished() for x in self.runs.values())>=4:
                 raise Failure('capacity','Concurrent Claude run capacity reached or adapter is shutting down')
             while len(self.runs)>=32:
-                old = next((key for key,value in self.runs.items() if value.done.is_set()),None)
+                old = next((key for key,value in self.runs.items() if value.execution_finished()),None)
                 if old is None: raise Failure('capacity','Run result capacity reached')
                 del self.runs[old]
             self.runs[run.id] = run
             run.thread = threading.Thread(target=run.work,args=(executable,))
-            run.thread.start()
+            try: run.thread.start()
+            except Exception:
+                if run.thread.ident is None: del self.runs[run.id]
+                raise Failure('startup_failed','Run worker could not start; no automatic retry was attempted') from None
         return run.info()
     def get(self,identifier):
         with self.lock: run = self.runs.get(identifier)
         if run is None:
-            raise Failure('unknown_run','Run belongs to another connection or its completed retention window has expired')
+            raise Failure('unknown_run','Run belongs to another connection or its result was released or evicted')
         return run
     def once(self,args,job):
         run = self.get(self.start(args,job)['run_id'])
@@ -195,6 +218,19 @@ class Claude:
     def listing(self,_args,_job):
         with self.lock: runs = list(self.runs.values())
         return {'runs':[r.info() for r in runs]}
+    def work_resources(self):
+        with self.lock: runs = list(self.runs.values())
+        return [run.work_resource() for run in runs]
+    def release(self,args,_job):
+        run = self.get(args['run_id'])
+        if not run.done.is_set():
+            raise Failure('run_active','Run is still active; cancel it and inspect its result before release')
+        if run.thread: run.thread.join(timeout=5)
+        if not run.execution_finished():
+            raise Failure('cleanup_unconfirmed','Run cleanup has not been confirmed; its result remains retained')
+        with self.lock:
+            if self.runs.get(run.id) is run: del self.runs[run.id]
+        return {'run_id':run.id,'released':True}
     def shutdown(self):
         with self.lock:
             self.stopping = True
@@ -202,6 +238,10 @@ class Claude:
         for run in runs: run.job.cancel()
         for run in runs:
             if run.thread: run.thread.join(timeout=5)
+        with self.lock:
+            self.runs = OrderedDict((key,run) for key,run in self.runs.items() if not run.execution_finished())
+            if self.runs:
+                raise Failure('cleanup_unconfirmed','Claude work has not confirmed cleanup')
     def tools(self):
         identifier = text_schema(64)
         return [
@@ -211,6 +251,7 @@ class Claude:
             Tool('claude.run.result','Read completion status and result without restarting or replaying the native command.',schema({'run_id':identifier,'max_events':integer_schema(1,256,128)},['run_id']),self.result,risk='read-only'),
             Tool('claude.run.events','Read byte-bounded native stream-json events using a run-local cursor.',schema({'run_id':identifier,'after_cursor':integer_schema(0,2**53-1,0),'limit':integer_schema(1,256,128),'max_bytes':integer_schema(1024,196608,196608)},['run_id']),self.events,risk='read-only'),
             Tool('claude.run.cancel','Cancel the exact owned Claude run; subsequent result inspection confirms termination. No native session is deleted.',schema({'run_id':identifier},['run_id']),self.cancel,risk='destructive'),
+            Tool('claude.run.release','Release the retained result and events of a completed, confirmed-cleaned run. Active or uncertain work is retained; native conversations are unchanged.',schema({'run_id':identifier},['run_id']),self.release,risk='destructive'),
         ]
 
 
@@ -220,7 +261,7 @@ def main():
     parser.add_argument('--executable',help='Absolute user-owned Claude Code path; otherwise CLAUDE_CODE_EXECUTABLE or PATH')
     args = parser.parse_args()
     claude = Claude(args.executable)
-    MCPServer('claude-mcp-adapter',VERSION,claude.tools(),claude.shutdown).serve()
+    MCPServer('claude-mcp-adapter',VERSION,claude.tools(),claude.shutdown,work=claude.work_resources).serve()
 
 
 if __name__=='__main__': main()

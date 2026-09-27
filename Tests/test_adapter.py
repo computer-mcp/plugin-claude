@@ -14,7 +14,7 @@ class AdapterTests(unittest.TestCase):
         return Client.value(response)
     def call(self,name,args=None,timeout=10):return self.client.call('claude.'+name,args,timeout)
     def test_catalog_declares_execution_and_inspection_risk(self):
-        expected = {'claude.run': 'full-shell', 'claude.run.start': 'full-shell', 'claude.run.list': 'read-only', 'claude.run.result': 'read-only', 'claude.run.events': 'read-only', 'claude.run.cancel': 'destructive'}
+        expected = {'claude.run': 'full-shell', 'claude.run.start': 'full-shell', 'claude.run.list': 'read-only', 'claude.run.result': 'read-only', 'claude.run.events': 'read-only', 'claude.run.cancel': 'destructive', 'claude.run.release': 'destructive'}
         tools = self.client.request('tools/list')['result']['tools']
         self.assertEqual({tool['name']:tool['_meta']['io.github.computer-mcp/risk'] for tool in tools},expected)
         for tool in tools:

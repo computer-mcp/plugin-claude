@@ -27,7 +27,7 @@ id = "stream"
 transport = "stdio"
 executable = { path = "bin/claude-mcp-adapter" }
 prefix = "claude"
-capabilities = ["tools"]
+capabilities = ["tools", "resources"]
 
 [[skills]]
 id = "claude-code"
