@@ -96,3 +96,16 @@ A private supervisor observes parent/connection shutdown, pins the native group 
 - The installed native `claude --version` and `claude --help` used to maintain the pinned CLI tree.
 
 Fixture protocol checks, native interface checks, exact-host interoperability and authenticated model execution are recorded separately.
+
+## Continuation binding
+
+Tools that accept an existing adapter handle declare
+`_meta["io.github.computer-mcp/continuation"]` with format version 1. The selector
+matches kind `claude.run` and primary resource `id` against argument
+`run_id` using JSON Pointer `/run_id`. This identifies the actual
+connection-owned lifetime; it does not rebind acquisition or grant permissions.
+New work and unscoped listings do not claim an existing owner. The declaration
+uses ordinary MCP metadata and requires no private Host Services. Hosts validate
+and retain it on its originating connection; gateway reexports strip it. Runtime
+generation selection remains host-owned, and this declaration alone does not
+enable live configuration changes.

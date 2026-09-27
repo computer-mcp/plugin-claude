@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from test_completion import adapter
 from test_review_regressions import Peer, FINAL
 from support import Client
-from plugin_runtime import Failure, Job, MCPServer, Process, WORK_INVOCATION, WORK_METADATA, WORK_URI
+from plugin_runtime import CONTINUATION_METADATA, Failure, Job, MCPServer, Process, WORK_INVOCATION, WORK_METADATA, WORK_URI
 
 
 class WorkResourceTests(unittest.TestCase):
@@ -75,6 +75,14 @@ class WorkResourceTests(unittest.TestCase):
                 catalog = client.request('tools/list')['result']['tools']
                 self.assertEqual(len(catalog),7)
                 self.assertTrue(all(t['_meta'][WORK_METADATA]=={'format_version':1,'uri':WORK_URI} for t in catalog))
+                declared = {tool['name']:tool['_meta'][CONTINUATION_METADATA]
+                            for tool in catalog if CONTINUATION_METADATA in tool['_meta']}
+                self.assertEqual(set(declared),{
+                    'claude.run.result','claude.run.events','claude.run.cancel','claude.run.release',
+                })
+                for selector in declared.values():
+                    self.assertEqual(selector,{'format_version':1,'selectors':[
+                        {'kind':'claude.run','handles':{'id':'/run_id'}}]})
                 self.assertEqual(client.request('resources/list')['result']['resources'][0]['uri'],WORK_URI)
                 empty = self.snapshot(client)
                 origin = str(uuid.uuid4())
