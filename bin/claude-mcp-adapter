@@ -48,6 +48,21 @@ def build_command(executable,args):
     return command, mode
 
 
+def checked_final(event):
+    subtype, failed, session = event.get('subtype'), event.get('is_error'), event.get('session_id')
+    if type(failed) is not bool or not isinstance(subtype,str) or not subtype:
+        raise Failure('invalid_vendor_response','Claude result lacks a typed outcome')
+    if not isinstance(session,str) or not session:
+        raise Failure('invalid_vendor_response','Claude result lacks a native session identity')
+    if not failed and subtype != 'success':
+        raise Failure('invalid_vendor_response','Claude result outcome contradicts its error flag')
+    if not failed and not isinstance(event.get('result'),str):
+        raise Failure('invalid_vendor_response','Successful Claude result lacks text')
+    if 'result' in event and event['result'] is not None and not isinstance(event['result'],str):
+        raise Failure('invalid_vendor_response','Claude result text has an invalid type')
+    return event
+
+
 class Run:
     def __init__(self,identifier,args):
         self.id, self.arguments = identifier, args
@@ -57,6 +72,7 @@ class Run:
         self.events = EventBuffer()
         self.state = 'starting'
         self.value = None
+        self.final_event = None
         self.session_id = args.get('resume_session_id') or args.get('session_id')
         self.process = None
         self.thread = None
@@ -92,9 +108,8 @@ class Run:
                         raise Failure('invalid_vendor_response','Claude emitted more than one final result')
                     if len(encoded(event))>131072:
                         raise Failure('result_too_large','Claude final result exceeds 128 KiB; no success was inferred from truncated data')
-                    if type(event.get('is_error')) is not bool:
-                        raise Failure('invalid_vendor_response','Claude result lacks a Boolean is_error field')
-                    final = event
+                    final = checked_final(event)
+                    with self.lock: self.final_event = final
             code = process.finish(deadline,self.job)
             if final is None:
                 raise Failure('vendor_failed',f'Claude exited with status {code} without a final result event')
@@ -116,7 +131,9 @@ class Run:
                 except Failure as error:
                     with self.lock:
                         self.state = 'failed'
-                        self.value = {'run_id':self.id,'session_id':self.session_id,'is_error':True,'error':{'code':error.code,'message':str(error)}}
+                        failure = {'code':error.code,'message':str(error)}
+                        self.value = {**(self.value or {}),'run_id':self.id,'session_id':self.session_id,'is_error':True,'cleanup_error':failure}
+                        self.value.setdefault('error',failure)
             # A completed result is visible only after owned process cleanup.
             self.arguments = {}
             self.done.set()
@@ -124,6 +141,9 @@ class Run:
         with self.lock:
             if not self.done.is_set(): return self.info()
             value = dict(self.value)
+            if self.final_event is not None:
+                value.update(final_event=self.final_event,result=self.final_event.get('result'),
+                             subtype=self.final_event['subtype'],total_cost_usd=self.final_event.get('total_cost_usd'))
         page = self.events.page(0,limit)
         return {**value,'state':self.state,'completed':True,'events':[row['event'] for row in page['events']],'event_page':{k:v for k,v in page.items() if k!='events'},'events_truncated':page['has_more'] or page['missed_events'] or page['omitted_events']>0}
 
@@ -142,6 +162,7 @@ class Claude:
         build_command(executable,args)
         run = Run(uuid.uuid4().hex,dict(args))
         with self.lock:
+            _job.check()
             if self.stopping or sum(not x.done.is_set() for x in self.runs.values())>=4:
                 raise Failure('capacity','Concurrent Claude run capacity reached or adapter is shutting down')
             while len(self.runs)>=32:

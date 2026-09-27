@@ -1,6 +1,6 @@
 id = "claude"
 name = "Claude Code"
-version = "0.1.0"
+version = "0.1.1"
 repository = "https://github.com/computer-mcp/plugin-claude"
 description = "Claude Code headless CLI automation plus a streaming CLI-to-MCP adapter."
 
