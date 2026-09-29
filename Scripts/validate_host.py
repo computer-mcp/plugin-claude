@@ -108,7 +108,7 @@ enabled = []
 '''
 
 
-def validate(host, archive, output):
+def validate(host, archive, output, expected_host_version, require_work_ownership=False):
     host = host.resolve(strict=True)
     archive = archive.resolve(strict=True)
     output.mkdir(parents=True, exist_ok=False)
@@ -126,7 +126,8 @@ def validate(host, archive, output):
         environment = {'PATH': os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin', '/usr/sbin', '/sbin']),
                        'HOME': str(home), 'TMPDIR': str(work), 'PYTHONDONTWRITEBYTECODE': '1', 'LANG': 'en_US.UTF-8'}
         version = capture([str(host), '--version'], work, environment).decode().strip()
-        require(version.startswith('1.2.2 '), 'This validator targets Computer MCP 1.2.2; review another host before use')
+        require(bool(expected_host_version) and version.startswith(expected_host_version + ' '),
+                'Host version differs from the explicitly selected acceptance version')
         inputs = work / 'inputs'
         inputs.mkdir()
         (inputs / f'{vendor}.zip').write_bytes(archive.read_bytes())
@@ -164,8 +165,21 @@ def validate(host, archive, output):
             projected = [tool for tool in catalog if tool.get('_meta', {}).get('cli', {}).get('command') == 'print']
             require(len(projected) == 1, 'Expected one real host-projected print tool')
             native_names = [tool['name'] for tool in catalog if tool['name'].startswith(vendor + '.')]
-            require(len(native_names) == (12 if vendor == 'cursor' else 6), 'Adapter catalog missing required tools')
+            require(len(native_names) == (12 if vendor == 'cursor' else 7), 'Adapter catalog missing required tools')
             checks['catalog'] = {'status':'passed', 'cli_tools':len(projected), 'mcp_tools':len(native_names)}
+            if require_work_ownership:
+                require(vendor == 'claude', 'Work ownership acceptance requires the Claude run contract')
+                require(all(key not in tool.get('_meta',{}) for tool in catalog
+                            for key in ('io.github.computer-mcp/work','io.github.computer-mcp/continuation')),
+                        'Gateway exports advertise downstream-only ownership metadata')
+            def work_status(count):
+                def observe():
+                    servers = checked(client,'mcp.servers.status',{'server':'fixture-adapter'})['servers']
+                    value = servers[0]['connection'].get('provider_work')
+                    require(isinstance(value,dict), 'Candidate host does not expose provider-work observation')
+                    return value
+                return wait_for(observe, lambda value:value['resource_count']==count
+                                and value['unsettled_invocation_count']==0 and not value['observation_pending'])
             prompt = "--leading 'quotes' 中文\nnot-a-shell-command"
             arguments = {'prompt': prompt}
             if vendor == 'claude':
@@ -197,10 +211,30 @@ def validate(host, archive, output):
                 checked(client, 'cursor.acp.session.close', {'session':session})
                 require(not checked(client, 'cursor.acp.session.list')['sessions'], 'Closed ACP session remains live')
             else:
+                work_evidence = None
+                if require_work_ownership:
+                    active = checked(client, 'claude.run.start', {'prompt':'slow'})['run_id']
+                    work_evidence = {'running':work_status(1)}
+                    refusal = client.call('claude.run.release', {'run_id':active})
+                    require(Client.value(refusal).get('error',{}).get('code')=='run_active', 'Active run was released')
+                    checked(client, 'claude.run.cancel', {'run_id':active})
+                    cancelled = wait_for(lambda:Client.value(client.call('claude.run.result', {'run_id':active})), lambda v:v.get('completed'))
+                    require(cancelled['cleanup_confirmed'] and cancelled['state']=='cancelled', 'Cancellation cleanup was not confirmed')
+                    work_evidence['cancelled_result_retained'] = work_status(1)
+                    checked(client, 'claude.run.release', {'run_id':active})
+                    work_evidence['cancelled_result_released'] = work_status(0)
                 run = checked(client, 'claude.run.start', {'prompt':'hello','permission_mode':'plan'})['run_id']
                 completed = wait_for(lambda: checked(client, 'claude.run.result', {'run_id':run}), lambda v:v.get('completed'))
                 require(completed['result'] == 'hello', 'Native final result was not preserved')
                 checked(client, 'claude.run.events', {'run_id':run,'max_bytes':2048})
+                if work_evidence is not None:
+                    work_evidence['completed_result_retained'] = work_status(1)
+                checked(client, 'claude.run.release', {'run_id':run})
+                require(not checked(client, 'claude.run.list')['runs'], 'Released run result remains retained')
+                if work_evidence is not None:
+                    work_evidence['released'] = work_status(0)
+                    require(len({value['instance_id'] for value in work_evidence.values()})==1, 'Ownership crossed provider instances')
+                    checks['provider_work'] = work_evidence
                 invalid = client.call('claude.run', {'prompt':'not-executed','permission_mode':'bypassPermissions'})
                 require(invalid['result'].get('isError'), 'Bypass mode was admitted')
             checks['mcp_execution_and_events'] = 'passed'
@@ -216,9 +250,30 @@ def validate(host, archive, output):
         finally:
             client.close()
         checks['read_only_profile'] = 'passed'
+        restricted = configuration(package, workspace, cli_fixture, ROOT / 'Tests/Fixtures/vendor.py', vendor)
+        restricted = restricted.replace('mode = "local-full-access"', 'mode = "workspace-operations"')
+        restricted = restricted.replace('full_shell_enabled = true', 'full_shell_enabled = false')
+        execution_tool = 'cursor.acp.prompt' if vendor == 'cursor' else 'claude.run'
+        # An explicit low host risk must not bypass the publisher's execution floor.
+        restricted += '\n[mcp.servers.tool_risks]\n' + json.dumps(execution_tool) + ' = "read-only"\n'
+        config.write_text(restricted)
+        client = Client(str(workspace), environment, [str(host), 'serve', 'stdio', '--config', str(config)])
+        try:
+            tools = client.request('tools/list')['result']['tools']
+            require(execution_tool not in {tool['name'] for tool in tools}, 'Restricted profile exposed arbitrary vendor execution')
+            inspection = 'cursor.acp.session.list' if vendor == 'cursor' else 'claude.run.list'
+            checked(client, inspection)
+            for name, arguments in [(execution_tool, {'prompt':'must-not-execute'}),
+                                    ('mcp.tools.call', {'server':'fixture-adapter','tool':execution_tool,'arguments':{'prompt':'must-not-execute'}})]:
+                denied = client.call(name, arguments)
+                require('error' in denied or denied['result'].get('isError'), 'Restricted profile admitted vendor execution')
+        finally:
+            client.close()
+        checks['publisher_floor_under_restricted_profile'] = 'passed'
     require(digest(host) == host_hash and digest(archive) == archive_hash, 'Host or archive changed during acceptance')
     report = {'status':'passed', 'observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'plugin_id':vendor, 'plugin_version':manifest['version'], 'host_version':version,
+              'expected_host_version':expected_host_version,
               'host_sha256':host_hash, 'archive_sha256':archive_hash, 'checks':checks,
               'scope':'host archive validation and ordinary standalone registrations with inert vendor fixtures',
               'production_installation':False, 'authenticated_model_execution':False,
@@ -230,10 +285,14 @@ def validate(host, archive, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, type=Path)
+    parser.add_argument('--expected-host-version', required=True,
+                        help='Exact reviewed host release version, for example 1.3.0')
     parser.add_argument('--archive', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--require-work-ownership', action='store_true',
+                        help='Require a candidate host to observe active and retained run ownership through release')
     args = parser.parse_args()
-    validate(args.host, args.archive, args.output)
+    validate(args.host, args.archive, args.output, args.expected_host_version, args.require_work_ownership)
 
 
 if __name__ == '__main__':

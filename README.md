@@ -6,7 +6,12 @@ The CLI contribution describes verified non-interactive commands. The native bas
 
 ## MCP capabilities
 
-The adapter provides `claude.run`, `claude.run.start`, `claude.run.list`, `claude.run.result`, `claude.run.events` and `claude.run.cancel`. It consumes native print-mode stream-json, including partial messages, and retains the final result, native session ID and explicit error status. Discovery does not launch Claude Code.
+The adapter provides `claude.run`, `claude.run.start`, `claude.run.list`, `claude.run.result`, `claude.run.events`, `claude.run.cancel` and `claude.run.release`. It consumes native print-mode stream-json, including partial messages, and retains the final result, native session ID and explicit error status. Release discards a completed result only after cleanup is confirmed. Discovery does not launch Claude Code.
+
+The ordinary MCP work resource reports active runs and retained result handles
+with their original acquisition reference. Hosts can account for this work
+after its creating tool returns, without private Host Services permission.
+Cleanup uncertainty remains owned and cannot be released or evicted.
 
 `permission_mode` defaults to `dontAsk`; `plan` and `acceptEdits` are supported explicit choices. The noninteractive contract does not expose permission-bypass modes or fabricate interactive permission responses. Existing vendor configuration continues to apply. Resume/continue/new-session selection is explicit; cancelling a run does not delete its saved native conversation.
 

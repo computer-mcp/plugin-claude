@@ -31,6 +31,16 @@ class LifecycleTests(unittest.TestCase):
     def test_eof_retires_vendor_and_descendant(self):self.scenario('eof')
     def test_sigterm_retires_vendor_and_descendant(self):self.scenario(signal.SIGTERM)
     def test_sigkill_parent_loss_is_detected_by_supervisor(self):self.scenario(signal.SIGKILL)
+    def test_exited_leader_remains_owned_until_descendants_are_retired(self):
+        with tempfile.TemporaryDirectory() as temp:
+            marker=Path(temp)/'pids.json'
+            client=Client(temp,{'FIXTURE_MARKER':str(marker)})
+            try:
+                response=client.call('claude.run',{'prompt':'earlychild'})
+                self.assertFalse(response['result']['isError'],response)
+                wait_stopped(wait_file(marker))
+            finally:client.close()
+
     def test_host_context_is_not_forwarded_to_vendor(self):
         with tempfile.TemporaryDirectory() as temp:
             client=Client(temp,{'COMPUTER_MCP_TEST_PRIVATE':'must-not-inherit'})

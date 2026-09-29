@@ -13,6 +13,14 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(response['result']['isError'],response)
         return Client.value(response)
     def call(self,name,args=None,timeout=10):return self.client.call('claude.'+name,args,timeout)
+    def test_catalog_declares_execution_and_inspection_risk(self):
+        expected = {'claude.run': 'full-shell', 'claude.run.start': 'full-shell', 'claude.run.list': 'read-only', 'claude.run.result': 'read-only', 'claude.run.events': 'read-only', 'claude.run.cancel': 'destructive', 'claude.run.release': 'destructive'}
+        tools = self.client.request('tools/list')['result']['tools']
+        self.assertEqual({tool['name']:tool['_meta']['io.github.computer-mcp/risk'] for tool in tools},expected)
+        for tool in tools:
+            risk = expected[tool['name']]
+            self.assertEqual(tool['annotations']['readOnlyHint'],risk=='read-only')
+            self.assertEqual(tool['annotations']['destructiveHint'],risk in {'destructive','full-shell'})
     def test_stream_json_through_mcp(self):
         r=self.value(self.call('run',{'prompt':'hello','permission_mode':'plan'}))
         self.assertEqual(r['result'],'hello');self.assertEqual(r['permission_mode'],'plan')
