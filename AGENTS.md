@@ -11,3 +11,11 @@ Keep vendor installation, authentication, subscription/API usage, updates, plugi
 Use Python standard library only unless a dependency demonstrably removes required complexity. Tests must cover MCP initialization, tool discovery, stream-json parsing, permission-boundary rejection, cancellation, deterministic package contents, and executable archive mode.
 
 Before handoff run unit tests, the native non-model interface check, deterministic package build, Computer MCP package validation/doctor where available, and git status. Do not publish or create a release implicitly.
+
+## Brand delivery
+
+The main Computer MCP repository owns ProductIdentity and BRAND. Imported
+`Documentation/Brand/header.svg` travels with the packaged manual;
+`.github/brand/social.png` supplies the repository preview. `brand.lock.json`
+binds both to canonical exports. Run `python3 Scripts/check-brand.py` locally
+and in CI. Update imports with the main repository's `Scripts/brand.py sync`.
