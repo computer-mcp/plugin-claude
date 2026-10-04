@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "authority": "https://github.com/computer-mcp/.github",
+  "revision": "9042c987ef8b3482f63e3a037ae0d0d2fdeffb9a7768c03295c9a6a6c5a43ae2",
+  "consumer": "plugin-claude",
+  "files": {
+    "Documentation/Brand/header-light.png": "f63192e4d181c89e5f924f4610899d7337db59f282b3e43c40b0c661e1341d56",
+    "Documentation/Brand/header-dark.png": "8e4b150d5412b80d1cd8d2041fef8e65445182c8425fd101ab6890a365ff96a6",
+    ".github/brand/social.png": "061bb78aae4b3674405b9171cb12bb9629cdab8294adcfe3a2616fdfbbe62a5d"
+  },
+  "entries": {
+    "README.md": [
+      "Claude Code",
+      "Documentation/Brand/header-light.png",
+      "Documentation/Brand/header-dark.png"
+    ]
+  }
+}
