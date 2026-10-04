@@ -4,6 +4,11 @@ All notable user-visible changes to the Claude Code plugin are documented here.
 
 ## Unreleased
 
+- Licensed under FSL-1.1-ALv2 (Functional Source License 1.1, Apache 2.0
+  future license): any use other than a competing product or service is
+  permitted, and each release becomes available under Apache-2.0 two years
+  after publication. Published releases keep their original license.
+
 ## 0.1.1 — 2026-09-29
 
 - Add `claude.run.release`, which frees a retained result only after its cleanup
