@@ -57,7 +57,7 @@ def wait_for(callback, predicate, seconds=15):
     raise AssertionError('Isolated execution did not reach its postcondition')
 
 
-def configuration(package, workspace, cli_fixture, acp_fixture, vendor, readonly=False):
+def configuration(package, workspace, cli_fixture, vendor_fixture, vendor, readonly=False):
     quote = json.dumps
     return f'''schema_version = 1
 [server]
@@ -91,7 +91,7 @@ tree = {{ kind = "file", path = {quote(str(package / 'cli-tree.json'))} }}
 id = "fixture-adapter"
 transport = "stdio"
 command = {quote(str(package / f'bin/{vendor}-mcp-adapter'))}
-args = ["--executable", {quote(str(acp_fixture))}]
+args = ["--executable", {quote(str(vendor_fixture))}]
 exposure = "reexport"
 prefix = ""
 allow_any_tool = true
@@ -165,10 +165,9 @@ def validate(host, archive, output, expected_host_version, require_work_ownershi
             projected = [tool for tool in catalog if tool.get('_meta', {}).get('cli', {}).get('command') == 'print']
             require(len(projected) == 1, 'Expected one real host-projected print tool')
             native_names = [tool['name'] for tool in catalog if tool['name'].startswith(vendor + '.')]
-            require(len(native_names) == (12 if vendor == 'cursor' else 7), 'Adapter catalog missing required tools')
+            require(len(native_names) == 7, 'Adapter catalog missing required tools')
             checks['catalog'] = {'status':'passed', 'cli_tools':len(projected), 'mcp_tools':len(native_names)}
             if require_work_ownership:
-                require(vendor == 'claude', 'Work ownership acceptance requires the Claude run contract')
                 require(all(key not in tool.get('_meta',{}) for tool in catalog
                             for key in ('io.github.computer-mcp/work','io.github.computer-mcp/continuation')),
                         'Gateway exports advertise downstream-only ownership metadata')
@@ -181,9 +180,7 @@ def validate(host, archive, output, expected_host_version, require_work_ownershi
                 return wait_for(observe, lambda value:value['resource_count']==count
                                 and value['unsettled_invocation_count']==0 and not value['observation_pending'])
             prompt = "--leading 'quotes' 中文\nnot-a-shell-command"
-            arguments = {'prompt': prompt}
-            if vendor == 'claude':
-                arguments['permission_mode'] = 'plan'
+            arguments = {'prompt': prompt, 'permission_mode': 'plan'}
             result = checked(client, projected[0]['name'], arguments)
             argv = result['data']['argv']
             require(argv[-2:] == ['--', prompt], 'Host did not preserve exact argv argument boundaries')
@@ -199,44 +196,32 @@ def validate(host, archive, output, expected_host_version, require_work_ownershi
             require('error' in bypass or bypass['result'].get('isError'), 'Raw execution bypassed the CLI tree')
             checks['cli_negative_contracts'] = 'passed'
 
-            if vendor == 'cursor':
-                session = checked(client, 'cursor.acp.session.open', {'permission_policy':'manual'})['session']
-                run = checked(client, 'cursor.acp.session.prompt.start', {'session':session,'prompt':'permission'})['prompt_id']
-                pending = wait_for(lambda: checked(client, 'cursor.acp.requests.list', {'session':session}), lambda v: bool(v['requests']))['requests'][0]
-                checked(client, 'cursor.acp.requests.respond', {'session':session,'request_id':pending['request_id'],
-                                                              'response':{'outcome':{'outcome':'selected','optionId':'opaque-no'}}})
-                completed = wait_for(lambda: checked(client, 'cursor.acp.session.prompt.result', {'session':session,'prompt_id':run}), lambda v:v.get('completed'))
-                require(not completed.get('is_error'), 'Background ACP fixture failed')
-                checked(client, 'cursor.acp.events.read', {'session':session,'max_bytes':2048})
-                checked(client, 'cursor.acp.session.close', {'session':session})
-                require(not checked(client, 'cursor.acp.session.list')['sessions'], 'Closed ACP session remains live')
-            else:
-                work_evidence = None
-                if require_work_ownership:
-                    active = checked(client, 'claude.run.start', {'prompt':'slow'})['run_id']
-                    work_evidence = {'running':work_status(1)}
-                    refusal = client.call('claude.run.release', {'run_id':active})
-                    require(Client.value(refusal).get('error',{}).get('code')=='run_active', 'Active run was released')
-                    checked(client, 'claude.run.cancel', {'run_id':active})
-                    cancelled = wait_for(lambda:Client.value(client.call('claude.run.result', {'run_id':active})), lambda v:v.get('completed'))
-                    require(cancelled['cleanup_confirmed'] and cancelled['state']=='cancelled', 'Cancellation cleanup was not confirmed')
-                    work_evidence['cancelled_result_retained'] = work_status(1)
-                    checked(client, 'claude.run.release', {'run_id':active})
-                    work_evidence['cancelled_result_released'] = work_status(0)
-                run = checked(client, 'claude.run.start', {'prompt':'hello','permission_mode':'plan'})['run_id']
-                completed = wait_for(lambda: checked(client, 'claude.run.result', {'run_id':run}), lambda v:v.get('completed'))
-                require(completed['result'] == 'hello', 'Native final result was not preserved')
-                checked(client, 'claude.run.events', {'run_id':run,'max_bytes':2048})
-                if work_evidence is not None:
-                    work_evidence['completed_result_retained'] = work_status(1)
-                checked(client, 'claude.run.release', {'run_id':run})
-                require(not checked(client, 'claude.run.list')['runs'], 'Released run result remains retained')
-                if work_evidence is not None:
-                    work_evidence['released'] = work_status(0)
-                    require(len({value['instance_id'] for value in work_evidence.values()})==1, 'Ownership crossed provider instances')
-                    checks['provider_work'] = work_evidence
-                invalid = client.call('claude.run', {'prompt':'not-executed','permission_mode':'bypassPermissions'})
-                require(invalid['result'].get('isError'), 'Bypass mode was admitted')
+            work_evidence = None
+            if require_work_ownership:
+                active = checked(client, 'claude.run.start', {'prompt':'slow'})['run_id']
+                work_evidence = {'running':work_status(1)}
+                refusal = client.call('claude.run.release', {'run_id':active})
+                require(Client.value(refusal).get('error',{}).get('code')=='run_active', 'Active run was released')
+                checked(client, 'claude.run.cancel', {'run_id':active})
+                cancelled = wait_for(lambda:Client.value(client.call('claude.run.result', {'run_id':active})), lambda v:v.get('completed'))
+                require(cancelled['cleanup_confirmed'] and cancelled['state']=='cancelled', 'Cancellation cleanup was not confirmed')
+                work_evidence['cancelled_result_retained'] = work_status(1)
+                checked(client, 'claude.run.release', {'run_id':active})
+                work_evidence['cancelled_result_released'] = work_status(0)
+            run = checked(client, 'claude.run.start', {'prompt':'hello','permission_mode':'plan'})['run_id']
+            completed = wait_for(lambda: checked(client, 'claude.run.result', {'run_id':run}), lambda v:v.get('completed'))
+            require(completed['result'] == 'hello', 'Native final result was not preserved')
+            checked(client, 'claude.run.events', {'run_id':run,'max_bytes':2048})
+            if work_evidence is not None:
+                work_evidence['completed_result_retained'] = work_status(1)
+            checked(client, 'claude.run.release', {'run_id':run})
+            require(not checked(client, 'claude.run.list')['runs'], 'Released run result remains retained')
+            if work_evidence is not None:
+                work_evidence['released'] = work_status(0)
+                require(len({value['instance_id'] for value in work_evidence.values()})==1, 'Ownership crossed provider instances')
+                checks['provider_work'] = work_evidence
+            invalid = client.call('claude.run', {'prompt':'not-executed','permission_mode':'bypassPermissions'})
+            require(invalid['result'].get('isError'), 'Bypass mode was admitted')
             checks['mcp_execution_and_events'] = 'passed'
         finally:
             client.close()
@@ -253,7 +238,7 @@ def validate(host, archive, output, expected_host_version, require_work_ownershi
         restricted = configuration(package, workspace, cli_fixture, ROOT / 'Tests/Fixtures/vendor.py', vendor)
         restricted = restricted.replace('mode = "local-full-access"', 'mode = "workspace-operations"')
         restricted = restricted.replace('full_shell_enabled = true', 'full_shell_enabled = false')
-        execution_tool = 'cursor.acp.prompt' if vendor == 'cursor' else 'claude.run'
+        execution_tool = 'claude.run'
         # An explicit low host risk must not bypass the publisher's execution floor.
         restricted += '\n[mcp.servers.tool_risks]\n' + json.dumps(execution_tool) + ' = "read-only"\n'
         config.write_text(restricted)
@@ -261,8 +246,7 @@ def validate(host, archive, output, expected_host_version, require_work_ownershi
         try:
             tools = client.request('tools/list')['result']['tools']
             require(execution_tool not in {tool['name'] for tool in tools}, 'Restricted profile exposed arbitrary vendor execution')
-            inspection = 'cursor.acp.session.list' if vendor == 'cursor' else 'claude.run.list'
-            checked(client, inspection)
+            checked(client, 'claude.run.list')
             for name, arguments in [(execution_tool, {'prompt':'must-not-execute'}),
                                     ('mcp.tools.call', {'server':'fixture-adapter','tool':execution_tool,'arguments':{'prompt':'must-not-execute'}})]:
                 denied = client.call(name, arguments)
