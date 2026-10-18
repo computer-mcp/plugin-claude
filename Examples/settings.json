@@ -1,0 +1,25 @@
+{
+  "enabled": true,
+  "dependencyExecutables": {
+    "claude-code": "/absolute/path/to/claude"
+  },
+  "mcp": {
+    "stream": {
+      "enabled": true,
+      "hostServices": false,
+      "args": [
+        "--executable",
+        "/absolute/path/to/claude"
+      ],
+      "exposure": "reexport",
+      "prefix": "",
+      "allowAnyTool": true
+    }
+  },
+  "cli": {
+    "claude": {
+      "enabled": true,
+      "allowAnyArgs": false
+    }
+  }
+}

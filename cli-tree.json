@@ -1,0 +1,222 @@
+{
+  "format_version": 1,
+  "source": "Claude Code CLI 2.1.59; verified --help and official Claude Code CLI documentation",
+  "executable_version": "2.1.59",
+  "coverage": "partial",
+  "omissions": [
+    "Interactive sessions, authentication/setup-token, updater/install commands, Chrome/IDE integration, plugin administration, MCP administration, worktree/tmux orchestration, and permission bypass flags are intentionally omitted.",
+    "Streaming event execution is exposed separately through the package MCP adapter. Unknown future flags require a reviewed plugin update."
+  ],
+  "executable_checks": [
+    {
+      "args": [
+        "--version"
+      ],
+      "stdout": "2.1.59 (Claude Code)\n"
+    }
+  ],
+  "commands": [
+    {
+      "id": "print",
+      "path": [],
+      "description": "Run Claude Code non-interactively and return its JSON result.",
+      "executable": true,
+      "help_argv": [
+        "--help"
+      ],
+      "parameters": [
+        {
+          "name": "prompt",
+          "description": "Task or question for Claude Code.",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 131072
+          }
+        },
+        {
+          "name": "model",
+          "description": "Claude model alias or full model identifier.",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        {
+          "name": "permission_mode",
+          "description": "Claude Code permission mode. bypassPermissions is intentionally not exposed.",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "dontAsk",
+              "plan",
+              "acceptEdits"
+            ]
+          }
+        },
+        {
+          "name": "resume_session_id",
+          "description": "Resume a session by id.",
+          "required": false,
+          "conflicts": [
+            "continue_previous",
+            "session_id",
+            "no_session_persistence"
+          ],
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        {
+          "name": "continue_previous",
+          "description": "Continue the most recent conversation in the current directory.",
+          "required": false,
+          "default": false,
+          "conflicts": [
+            "resume_session_id",
+            "session_id",
+            "no_session_persistence"
+          ],
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "session_id",
+          "description": "Use an explicit UUID for a new session.",
+          "required": false,
+          "conflicts": [
+            "resume_session_id",
+            "continue_previous"
+          ],
+          "schema": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36
+          }
+        },
+        {
+          "name": "no_session_persistence",
+          "description": "Disable session persistence for this print-mode invocation.",
+          "required": false,
+          "default": false,
+          "conflicts": [
+            "resume_session_id",
+            "continue_previous"
+          ],
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "max_budget_usd",
+          "description": "Maximum API spend for this invocation.",
+          "required": false,
+          "schema": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        {
+          "name": "effort",
+          "description": "Reasoning effort level.",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        },
+        {
+          "name": "append_system_prompt",
+          "description": "Append text to Claude Code's default system prompt.",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        }
+      ],
+      "argv": [
+        {
+          "kind": "literal",
+          "value": "-p"
+        },
+        {
+          "kind": "literal",
+          "value": "--output-format=json"
+        },
+        {
+          "kind": "option",
+          "parameter": "model",
+          "flag": "--model",
+          "style": "equals"
+        },
+        {
+          "kind": "option",
+          "parameter": "permission_mode",
+          "flag": "--permission-mode",
+          "style": "equals"
+        },
+        {
+          "kind": "option",
+          "parameter": "resume_session_id",
+          "flag": "--resume",
+          "style": "equals"
+        },
+        {
+          "kind": "flag",
+          "parameter": "continue_previous",
+          "flag": "--continue"
+        },
+        {
+          "kind": "option",
+          "parameter": "session_id",
+          "flag": "--session-id",
+          "style": "equals"
+        },
+        {
+          "kind": "flag",
+          "parameter": "no_session_persistence",
+          "flag": "--no-session-persistence"
+        },
+        {
+          "kind": "option",
+          "parameter": "max_budget_usd",
+          "flag": "--max-budget-usd",
+          "style": "equals"
+        },
+        {
+          "kind": "option",
+          "parameter": "effort",
+          "flag": "--effort",
+          "style": "equals"
+        },
+        {
+          "kind": "option",
+          "parameter": "append_system_prompt",
+          "flag": "--append-system-prompt",
+          "style": "equals"
+        },
+        {
+          "kind": "literal",
+          "value": "--"
+        },
+        {
+          "kind": "positional",
+          "parameter": "prompt"
+        }
+      ],
+      "stdout": "json"
+    }
+  ]
+}

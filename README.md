@@ -1,0 +1,38 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Documentation/Brand/header-dark.png">
+  <img alt="Computer MCP — Claude Code" src="Documentation/Brand/header-light.png">
+</picture>
+
+# Computer MCP — Claude Code
+
+Part of the [Computer MCP](https://computer-mcp.github.io/) family.
+**Wherever you chat, your computer is there.**
+
+An independent Computer MCP plugin for Claude Code. The same package contributes a canonical CLI Tree, a stdio MCP adapter and client-neutral usage Skills. It does not link Computer MCP Core or require a host release to add vendor behavior.
+
+The CLI contribution describes verified non-interactive commands. The native baseline and its exact version assertion live in `cli-tree.json`. It is deliberately partial: interactive setup, installation and unsupported administrative flows are not represented as callable tools. The adapter separately owns streaming and session/run state; the host owns registration, profile grants, initial working-directory selection and audit.
+
+## MCP capabilities
+
+The adapter provides `claude.run`, `claude.run.start`, `claude.run.list`, `claude.run.result`, `claude.run.events`, `claude.run.cancel` and `claude.run.release`. It consumes native print-mode stream-json, including partial messages, and retains the final result, native session ID and explicit error status. Release discards a completed result only after cleanup is confirmed. Discovery does not launch Claude Code.
+
+The ordinary MCP work resource reports active runs and retained result handles
+with their original acquisition reference. Hosts can account for this work
+after its creating tool returns, without private Host Services permission.
+Cleanup uncertainty remains owned and cannot be released or evicted.
+
+`permission_mode` defaults to `dontAsk`; `plan` and `acceptEdits` are supported explicit choices. The noninteractive contract does not expose permission-bypass modes or fabricate interactive permission responses. Existing vendor configuration continues to apply. Resume/continue/new-session selection is explicit; cancelling a run does not delete its saved native conversation.
+
+## Use and verify
+
+The external `claude` executable, Python 3.13+ and vendor credentials are user-owned. Install neither through this plugin. Configure the two contributions using the [installation guide](Documentation/Reference/Installation.md) and `Examples/settings.json`.
+
+```sh
+python3 -m unittest discover -s Tests -p 'test_*.py' -v
+python3 Scripts/validate_native.py --executable /absolute/path/to/claude
+python3 Scripts/build_package.py /new/output/directory
+```
+
+Normal tests use deterministic peers, not a model. Authenticated execution and production activation are separate acceptance steps. See the [interface contract](Documentation/Reference/Interface.md) for retention, cancellation and error semantics and the [documentation index](Documentation/README.md) for ownership.
+
+The working directory is not an operating-system sandbox. Vendor configuration, credentials and tools retain their own authority; host authorization does not silently approve vendor actions.
