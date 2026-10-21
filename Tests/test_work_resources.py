@@ -68,6 +68,30 @@ class WorkResourceTests(unittest.TestCase):
         self.assertEqual(run.result().get('cleanup_error',{}).get('code'),'cleanup_unconfirmed')
         self.assertFalse(run.execution_finished())
 
+    def test_version_probe_uses_the_tree_assertion(self):
+        expected = 'fixture native version\n'
+        tree = dict(adapter.TREE,executable_checks=[
+            {'args':['--help'],'stdout':'fixture help'},
+            {'args':['--version'],'stdout':expected},
+        ])
+        run = adapter.Run('probe',{'prompt':'fixture'})
+        with patch.object(adapter,'TREE',tree),patch('plugin_runtime.Process',return_value=Peer([expected.encode()])) as probe,patch.object(adapter,'Process',return_value=Peer([FINAL])):
+            run.work('/unused')
+        probe.assert_called_once_with(['/unused','--version'],os.getcwd())
+        self.assertEqual(run.result()['state'],'completed')
+        self.assertTrue(run.execution_finished())
+
+    def test_missing_version_assertion_fails_before_starting_processes(self):
+        for checks in ([],[{'args':['--help'],'stdout':'fixture help'}],[{'args':['--version']}]):
+            with self.subTest(checks=checks):
+                run = adapter.Run('probe',{'prompt':'fixture'})
+                with patch.object(adapter,'TREE',dict(adapter.TREE,executable_checks=checks)),patch('plugin_runtime.Process') as probe,patch.object(adapter,'Process') as native:
+                    run.work('/unused')
+                probe.assert_not_called()
+                native.assert_not_called()
+                self.assertEqual(run.result()['error']['code'],'invalid_configuration')
+                self.assertTrue(run.execution_finished())
+
     def test_completed_results_remain_owned_until_explicit_release(self):
         with tempfile.TemporaryDirectory() as directory:
             client = Client(directory)

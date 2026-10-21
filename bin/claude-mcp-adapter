@@ -12,7 +12,7 @@ import time
 import uuid
 
 from plugin_runtime import (EventBuffer, Failure, Job, MCPServer, Process, Tool,
-    decoded, encoded, integer_schema, load_package, resolve_executable, schema,
+    decoded, encoded, expected_version, integer_schema, load_package, resolve_executable, schema,
     text_schema, validate, verify_version)
 
 MANIFEST, TREE = load_package(__file__)
@@ -106,7 +106,7 @@ class Run:
         deadline = time.monotonic()+self.arguments.get('timeout_seconds',600)
         try:
             command, mode = build_command(executable,self.arguments)
-            verify_version(executable,TREE,self.job,os.getcwd(),self.retain_version_process)
+            verify_version(executable,expected_version(TREE),self.job,os.getcwd(),self.retain_version_process)
             with self.lock: self.version_process = None
             self.job.check()
             process = Process(command,os.getcwd())

@@ -2,27 +2,44 @@
 
 This guide covers publishing an accepted package and notifying the official
 plugin catalog. [Versioning and Release](../Architecture/VersioningAndRelease.md)
-owns the version, acceptance and immutability rules.
+owns this repository's version sources and acceptance checks. The organization's
+[VERSIONING.md](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md)
+owns shared rules; its
+[plugin release guide](https://github.com/computer-mcp/.github/blob/master/Documentation/Reference/PluginRelease.md)
+describes the reusable workflow and recovery contract.
 
 ## Publish
 
+Before the first release, the repository owner must enable GitHub release
+immutability in the repository settings. The release workflow refuses publication
+when that prerequisite is disabled or cannot be verified.
+
 1. Confirm that `version` in `computer-mcp-plugin.toml` has not been released
-   and that the reviewed `master` commit has a successful CI run.
-2. Download that run's `claude-plugin-<commit>-3.13` artifact. Rebuild the same
-   commit with `python3 Scripts/build_package.py <new directory>` and confirm the
-   two `claude.zip` files are byte-identical.
+   and that the reviewed `master` commit has a successful `ci.yml` push run.
+2. Dispatch `.github/workflows/release.yml` with `ref` set to that full commit
+   SHA and `publish: false` (the default). It rebuilds with
+   `python3 Scripts/build_package.py`, compares against the exact
+   `claude-plugin-<commit>-3.13` CI artifact and uploads
+   `plugin-release-<run-id>-<attempt>`. Inspect its `assets/` directory for
+   `claude.zip`, `release-receipt.json` and `SHA256SUMS`. An untagged dry run
+   reports the signed annotated tag still required for publication.
 3. Run the native and isolated host checks in
    [Installation](Installation.md#isolated-host-interoperability) against that
-   exact archive.
-4. Create a signed annotated tag `vX.Y.Z` on the accepted commit and push it.
-5. Create the GitHub Release for the tag with `claude.zip`, `SHA256SUMS` and
-   `release-receipt.json`, then publish it.
+   exact `claude.zip`. Keep authenticated execution and production installation
+   results separate from fixture and non-model checks.
+4. Create and push a signed annotated tag `vX.Y.Z` on the accepted commit.
+   Record the manual acceptance results and their limits in a draft GitHub
+   Release's notes for that tag, targeting the full commit SHA.
+5. Dispatch `release.yml` with `ref` set to the version tag and `publish: true`.
+   The shared workflow verifies the tag signature, manifest and CI provenance,
+   rebuilds the archive, generates the receipt and checksums, and publishes the
+   verified assets through the draft Release. The dependent notifier then
+   requests catalog reconciliation.
 
-`release-receipt.json` is written by the publisher; no script generates it. It
-records the plugin ID and version, tag, source commit, archive name, size and
-SHA-256, the source CI run and artifact digest, the declared compatibility, and
-the validation results with their limits. `SHA256SUMS` covers the archive and the
-receipt.
+The shared workflow generates deterministic `release-receipt.json` and
+`SHA256SUMS` according to the organization schema. The receipt records source,
+compatibility and artifact provenance; manual acceptance results belong in the
+Release notes.
 
 ## Catalog notification
 
@@ -44,20 +61,18 @@ that website commit first, then update the pin here when adopting a change to
 the notification contract.
 
 A release published with a repository `GITHUB_TOKEN` does not trigger
-release-event workflows. Automation that publishes that way calls the workflow
-as a dependent of the job that makes the release public:
-
-```yaml
-notify-catalog:
-  needs: publish
-  uses: ./.github/workflows/notify-catalog.yml
-  secrets:
-    CATALOG_APP_PRIVATE_KEY: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
-```
+release-event workflows. `release.yml` calls `notify-catalog.yml` as a dependent
+job only when `publish` is true and the shared release workflow reports
+`published`. Only that job receives `CATALOG_APP_PRIVATE_KEY`; a dry run does
+not use the catalog secret.
 
 ## Retry
 
-For an operator-driven publication or a missed or failed notification, dispatch:
+Retry a failed publication with **Re-run failed jobs**. The shared workflow
+reuses the verified bundle or a draft's frozen receipt as described in its
+[recovery guide](https://github.com/computer-mcp/.github/blob/master/Documentation/Reference/PluginRelease.md#run-and-recover).
+
+For a missed or failed notification, rerun only the notifier job or dispatch:
 
 ```sh
 gh workflow run notify-catalog.yml --repo computer-mcp/plugin-claude --ref master

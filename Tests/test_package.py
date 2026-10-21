@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import zipfile
 
@@ -23,6 +24,9 @@ class PackageTests(unittest.TestCase):
             self.assertIn('computer-mcp-plugin.toml',names)
             self.assertIn('cli-tree.json',names)
             self.assertIn('bin/plugin_runtime.py',names)
+            packaged_manifest=tomllib.loads(archive.read('computer-mcp-plugin.toml').decode())
+            self.assertIs(type(packaged_manifest['plugin_api']),int)
+            self.assertEqual(packaged_manifest['plugin_api'],1)
             for entry in archive.infolist():
                 self.assertFalse(any(p.startswith('.') or p=='__pycache__' for p in Path(entry.filename).parts))
                 self.assertFalse(entry.filename.endswith(('.pyc','.pyo')))
