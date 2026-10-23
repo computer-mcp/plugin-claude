@@ -17,9 +17,9 @@ Computer MCP publishes plugin configuration changes to connected clients atomica
 ## Build
 
 ```sh
-python3 -m unittest discover -s Tests -p 'test_*.py' -v
-python3 Scripts/validate_native.py --executable /absolute/path/to/claude
-python3 Scripts/build_package.py /new/output/directory
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 scripts/validate_native.py --executable /absolute/path/to/claude
+python3 scripts/build_package.py /new/output/directory
 ```
 
 The builder produces `claude.zip` and prints an ID/version/SHA-256 receipt. Identical source bytes produce identical archive bytes. It refuses to overwrite a different existing artifact. The archive contains the manifest, canonical CLI tree, adapters, Skills, examples, manuals and notices. It excludes tests, build scripts, local evidence, caches and credentials. Only executable entrypoints receive executable mode.
@@ -31,7 +31,7 @@ CI runs deterministic fixture tests and packaging; it does not install a vendor 
 After packaging, validate the exact ZIP against the reviewed Computer MCP binary. Select its release version explicitly; a mismatch fails before package extraction:
 
 ```sh
-python3 Scripts/validate_host.py \
+python3 scripts/validate_host.py \
   --host "/absolute/path/to/candidate/computer-mcp" \
   --expected-host-version "<host-version>" \
   --archive /output/PLUGIN.zip \

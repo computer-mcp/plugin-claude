@@ -16,10 +16,10 @@ describes workflow verification and recovery.
 
 | Shipped component | Version meaning | Version source | Mirrors and derived fields | Update and read-only check |
 | --- | --- | --- | --- | --- |
-| `claude.zip` plugin package | Package version | `version` in [`computer-mcp-plugin.toml`](../../computer-mcp-plugin.toml) | adapter `--version`, builder receipt, release tag, `release-receipt.json`, catalog entry | Edit the manifest; `Tests/test_package.py` checks the packaged adapter's `--version` |
+| `claude.zip` plugin package | Package version | `version` in [`computer-mcp-plugin.toml`](../../computer-mcp-plugin.toml) | adapter `--version`, builder receipt, release tag, `release-receipt.json`, catalog entry | Edit the manifest; `tests/test_package.py` checks the packaged adapter's `--version` |
 
 The archive contains the manifest, `cli-tree.json`, `bin/`, `skills/`, the README,
-contribution guide, license, notices, `Documentation/` and `Examples/`.
+contribution guide, license, notices, `docs/` and `Examples/`.
 Tests, build scripts and workflows are excluded from the archive.
 
 ## Compatibility Surface
@@ -39,13 +39,13 @@ checks that 3.11 and 3.12 are rejected before any vendor process starts.
 `cli-tree.json` pins the exact Claude Code version through its
 `executable_checks`, applied before projected CLI calls and adapter execution.
 A different vendor version requires a reviewed tree update verified with
-`Scripts/validate_native.py` against the real executable. Native version/help,
+`scripts/validate_native.py` against the real executable. Native version/help,
 fixture protocol, selected-host interoperability and authenticated execution
 are separate evidence classes; see [Installation](Installation.md).
 
 ## Derived Metadata and Drift Checks
 
-`Scripts/build_package.py` verifies the plugin ID, parses the CLI tree, and
+`scripts/build_package.py` verifies the plugin ID, parses the CLI tree, and
 produces the same archive bytes from the same source. Its builder receipt prints
 the ID, version and SHA-256. The release caller passes this builder to the shared
 release workflow.
@@ -65,7 +65,7 @@ The shared workflow checks that setting before writing a Release.
    and that the reviewed `master` commit has a successful `ci.yml` push run.
 2. Dispatch `.github/workflows/release.yml` with `ref` set to that full commit
    SHA and `publish: false` (the default). It rebuilds with
-   `python3 Scripts/build_package.py`, compares against the exact
+   `python3 scripts/build_package.py`, compares against the exact
    `claude-plugin-<commit>-3.13` CI artifact and uploads
    `plugin-release-<run-id>-<attempt>`. Inspect its `assets/` directory for
    `claude.zip`, `release-receipt.json` and `SHA256SUMS`. An untagged dry run
@@ -130,10 +130,10 @@ acceptance record.
 
 | Operation | Existing command or explicit manual procedure | Required access |
 | --- | --- | --- |
-| Version update and check | Edit `computer-mcp-plugin.toml`; `python3 -m unittest discover -s Tests -p 'test_*.py'` | Local checkout |
-| Candidate validation and build | `ci.yml`; locally `python3 Scripts/build_package.py dist` | CI or local checkout |
-| Native acceptance | `python3 Scripts/validate_native.py --executable <claude>` | User-installed native executable |
-| Exact archive host acceptance | `python3 Scripts/validate_host.py --host <computer-mcp> --expected-host-version X.Y.Z --archive dist/claude.zip --output <new-evidence-directory>`; see [Installation](Installation.md#isolated-host-interoperability) | Selected host binary and candidate archive |
+| Version update and check | Edit `computer-mcp-plugin.toml`; `python3 -m unittest discover -s tests -p 'test_*.py'` | Local checkout |
+| Candidate validation and build | `ci.yml`; locally `python3 scripts/build_package.py dist` | CI or local checkout |
+| Native acceptance | `python3 scripts/validate_native.py --executable <claude>` | User-installed native executable |
+| Exact archive host acceptance | `python3 scripts/validate_host.py --host <computer-mcp> --expected-host-version X.Y.Z --archive dist/claude.zip --output <new-evidence-directory>`; see [Installation](Installation.md#isolated-host-interoperability) | Selected host binary and candidate archive |
 | Acceptance and publication | Manual checks above; dispatch `release.yml`, dry run first | Repository Actions; publication also needs a signing key and release write access |
 | Status and interrupted-run recovery | Inspect CI or `release.yml`; follow [Retry](#retry) | Repository Actions |
 | Cleanup | Delete obsolete output and evidence under ignored `dist/`, and `package-receipt.json` | Local checkout |
