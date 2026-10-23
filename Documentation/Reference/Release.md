@@ -9,7 +9,7 @@ The organization [VERSIONING](https://github.com/computer-mcp/.github/blob/maste
 owns version rules, including tags, version choice and the changelog. This
 reference records this repository's version sources, compatibility, release
 procedure and checks. The shared
-[release workflow guide](https://github.com/computer-mcp/.github/blob/master/Documentation/Reference/PluginRelease.md)
+[release workflow guide](https://github.com/computer-mcp/github-workflows/blob/master/docs/plugin-release.md)
 describes workflow verification and recovery.
 
 ## Components and Version Sources
@@ -101,8 +101,8 @@ The job checks this repository's immutable ID, does not check out package code,
 and grants its own token no repository permissions. Missing or rejected
 authority fails the run visibly.
 
-The website's notification action is pinned to a reviewed full commit. Publish
-that website commit first, then update the pin here when adopting a change to
+The shared notification action is pinned to a reviewed full commit. Publish
+that shared workflow commit first, then update the pin here when adopting a change to
 the notification contract.
 
 A release published with a repository `GITHUB_TOKEN` does not trigger
@@ -148,7 +148,7 @@ per-artifact retention override.
 
 Retry a failed publication with **Re-run failed jobs**. The shared workflow
 reuses the verified bundle or a draft's frozen receipt as described in its
-[recovery guide](https://github.com/computer-mcp/.github/blob/master/Documentation/Reference/PluginRelease.md#run-and-recover).
+[recovery guide](https://github.com/computer-mcp/github-workflows/blob/master/docs/plugin-release.md#run-and-recover).
 
 For a missed or failed notification, rerun only the notifier job or dispatch:
 
