@@ -1,6 +1,6 @@
 # Package architecture
 
-This repository owns the Claude Code CLI description and print/stream-json-to-MCP adapter. Computer MCP owns admission, host grants, workspace selection, CLI encoding and audit. The package neither links Computer MCP Core nor modifies host state or requires Host Services.
+This repository owns the Claude Code CLI description and print/stream-json-to-MCP adapter. Computer MCP owns admission, host grants, project selection, CLI encoding and audit. The package neither links Computer MCP Core nor modifies host state or requires Host Services.
 
 `computer-mcp-plugin.toml` combines a canonical file-backed CLI tree, the stdio adapter and Skills. `cli-tree.json` owns the exact supported native command/version contract. `bin/claude-mcp-adapter` owns run handles, retained native events and final results, cancellation and explicit native permission modes. Native conversation persistence stays with Claude Code; no duplicate vendor session database is created.
 
