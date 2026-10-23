@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -24,11 +25,18 @@ class PackageTests(unittest.TestCase):
             self.assertIn('computer-mcp-plugin.toml',names)
             self.assertIn('cli-tree.json',names)
             self.assertIn('bin/plugin_runtime.py',names)
+            for asset in builder.README_ASSETS:
+                self.assertIn(asset,names)
+                self.assertEqual(archive.read(asset),(ROOT/asset).read_bytes())
+            self.assertEqual({name for name in names if name.startswith('.github/')},
+                             set(builder.README_ASSETS))
             packaged_manifest=tomllib.loads(archive.read('computer-mcp-plugin.toml').decode())
             self.assertIs(type(packaged_manifest['plugin_api']),int)
             self.assertEqual(packaged_manifest['plugin_api'],1)
             for entry in archive.infolist():
-                self.assertFalse(any(p.startswith('.') or p=='__pycache__' for p in Path(entry.filename).parts))
+                if entry.filename not in builder.README_ASSETS:
+                    self.assertFalse(any(p.startswith('.') for p in Path(entry.filename).parts))
+                self.assertNotIn('__pycache__',Path(entry.filename).parts)
                 self.assertFalse(entry.filename.endswith(('.pyc','.pyo')))
                 expected=0o755 if entry.filename==f"bin/{manifest['id']}-mcp-adapter" else 0o644
                 self.assertEqual(stat.S_IMODE(entry.external_attr>>16),expected)
@@ -38,6 +46,16 @@ class PackageTests(unittest.TestCase):
                 result=subprocess.run(command,capture_output=True,text=True,timeout=3)
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertEqual(result.stdout.strip(),manifest['version'])
+    def test_readme_relative_links_resolve_in_archive(self):
+        data,_=builder.package_bytes(ROOT)
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            readme=archive.read('README.md').decode()
+            links=re.findall(r'(?:href|src|srcset)="([^"]+)"|\]\(([^)]+)\)',readme)
+            for html,markdown in links:
+                target=(html or markdown).split('#',1)[0]
+                if target and '://' not in target:
+                    self.assertIn(target,archive.namelist())
+
     def test_bytecode_and_local_metadata_cannot_change_release_bytes(self):
         before,_=builder.package_bytes(ROOT)
         with tempfile.TemporaryDirectory() as temp:
@@ -45,7 +63,10 @@ class PackageTests(unittest.TestCase):
             for name in builder.INCLUDE:
                 source=ROOT/name
                 if source.is_dir():shutil.copytree(source,copy/name)
-                else:shutil.copyfile(source,copy/name)
+                else:
+                    (copy/name).parent.mkdir(parents=True,exist_ok=True)
+                    shutil.copyfile(source,copy/name)
+            (copy/'.github/assets/logo/unlisted.png').write_bytes(b'not-release-content')
             cache=copy/'bin/__pycache__';cache.mkdir(exist_ok=True)
             (cache/'arbitrary.pyc').write_bytes(b'not-release-content')
             (copy/'bin/.DS_Store').write_bytes(b'not-release-content')
