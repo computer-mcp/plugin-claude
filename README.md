@@ -1,38 +1,119 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="Documentation/Brand/header-dark.png">
-  <img alt="Computer MCP — Claude Code" src="Documentation/Brand/header-light.png">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo/logo-dark.png">
+    <img src=".github/assets/logo/logo-light.png" width="128" height="128" alt="">
+  </picture>
+</p>
 
-# Computer MCP — Claude Code
+<h1 align="center">Claude Code</h1>
 
-Part of the [Computer MCP](https://computer-mcp.github.io/) family.
-**Wherever you chat, your computer is there.**
+<p align="center">Computer MCP family plugin for Claude Code CLI and streaming MCP integration.</p>
 
-An independent Computer MCP plugin for Claude Code. The same package contributes a canonical CLI Tree, a stdio MCP adapter and client-neutral usage Skills. It does not link Computer MCP Core or require a host release to add vendor behavior.
+<p align="center">
+  <a href="https://github.com/computer-mcp/plugin-claude/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/computer-mcp/plugin-claude/ci.yml?branch=master&label=CI&style=flat"></a>
+  <img alt="Python 3.13 or newer" src="https://img.shields.io/badge/Python-3.13%2B-blue?style=flat">
+  <img alt="Architecture: arm64" src="https://img.shields.io/badge/architecture-arm64-lightgrey?style=flat">
+  <a href="LICENSE"><img alt="License: FSL-1.1-ALv2" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-blue?style=flat"></a>
+</p>
 
-The CLI contribution describes verified non-interactive commands. The native baseline and its exact version assertion live in `cli-tree.json`. It is deliberately partial: interactive setup, installation and unsupported administrative flows are not represented as callable tools. The adapter separately owns streaming and session/run state; the host owns registration, profile grants, initial working-directory selection and audit.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="docs/Reference/Interface.md">Interface</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
-## MCP capabilities
+## Overview
 
-The adapter provides `claude.run`, `claude.run.start`, `claude.run.list`, `claude.run.result`, `claude.run.events`, `claude.run.cancel` and `claude.run.release`. It consumes native print-mode stream-json, including partial messages, and retains the final result, native session ID and explicit error status. Release discards a completed result only after cleanup is confirmed. Discovery does not launch Claude Code.
+An independent [Computer MCP](https://computer-mcp.github.io/) plugin for Claude Code. One
+package contributes a canonical CLI tree, a stdio MCP adapter that streams runs, and
+client-neutral usage skills. It does not link Computer MCP Core, and adding vendor behavior needs
+no host release.
 
-The ordinary MCP work resource reports active runs and retained result handles
-with their original acquisition reference. Hosts can account for this work
-after its creating tool returns, without private Host Services permission.
-Cleanup uncertainty remains owned and cannot be released or evicted.
+The CLI contribution describes verified non-interactive commands; the native baseline and its
+exact version assertion live in `cli-tree.json`. It is deliberately partial: interactive setup,
+installation and unsupported administrative flows are not callable tools. The adapter owns
+streaming and session and run state. The host owns registration, profile grants, the initial
+working directory and audit.
 
-`permission_mode` defaults to `dontAsk`; `plan` and `acceptEdits` are supported explicit choices. The noninteractive contract does not expose permission-bypass modes or fabricate interactive permission responses. Existing vendor configuration continues to apply. Resume/continue/new-session selection is explicit; cancelling a run does not delete its saved native conversation.
+## Quick look
 
-## Use and verify
+| Contribution | What it adds |
+| --- | --- |
+| `claude` CLI | Typed tools for the verified non-interactive Claude Code commands |
+| `stream` MCP server | `claude.run`, `claude.run.start`, `claude.run.list`, `claude.run.result`, `claude.run.events`, `claude.run.cancel` and `claude.run.release`, plus a work resource listing active runs and retained results |
+| `claude-code` skill | Guidance for choosing the CLI or the streaming tools safely |
 
-The external `claude` executable, Python 3.13+ and vendor credentials are user-owned. Install neither through this plugin. Configure the two contributions using the [installation guide](Documentation/Reference/Installation.md) and `Examples/settings.json`.
+Install the archive in the host, bind the `claude` executable, and configure both contributions
+from `Examples/settings.json`.
+
+## Install
+
+1. Install and authenticate Claude Code yourself, and provide Python 3.13 or newer on the
+   Computer MCP launch `PATH`. The plugin never installs or updates either, logs in, creates setup
+   tokens or copies credentials.
+2. Build the archive:
+
+   ```sh
+   python3 scripts/build_package.py /new/output/directory
+   ```
+
+3. Install the ZIP through Computer MCP's plugin UI or the owner CLI. Installation is neither
+   activation nor a permission grant.
+4. Review `Examples/settings.json`, replace its placeholder paths, and configure the plugin
+   through the same UI or `plugins configure`. The CLI dependency binding selects the executable
+   for the CLI contribution; the MCP launch `args` supply `--executable` for the adapter. Point
+   both at the same verified installation.
+
+See the [installation guide](docs/Reference/Installation.md) for revisions, configuration
+publication and validation.
+
+## Usage
+
+The adapter consumes Claude Code's print-mode stream-json, including partial messages, and keeps
+the final result, the native session ID and an explicit error status. Discovery does not launch
+Claude Code. Release discards a completed result only after cleanup is confirmed; cleanup
+uncertainty stays owned and cannot be released or evicted. The work resource reports each active
+run and retained result with its original acquisition reference, so hosts can account for work
+after the creating tool returns, without private Host Services permission.
+
+`permission_mode` defaults to `dontAsk`; `plan` and `acceptEdits` are supported explicit choices.
+The non-interactive contract exposes no permission-bypass mode and never fabricates interactive
+permission responses, and existing vendor configuration continues to apply. Choosing to resume,
+continue or start a session is explicit, and cancelling a run does not delete its saved native
+conversation.
+
+The working directory is not an operating-system sandbox. Vendor configuration, credentials and
+tools keep their own authority; host authorization does not silently approve vendor actions. See
+the [interface contract](docs/Reference/Interface.md) for retention, cancellation and error
+semantics.
+
+## Requirements
+
+- Computer MCP on an arm64 computer.
+- Claude Code, installed and authenticated separately; its version must match `cli-tree.json`.
+- Python 3.13 or newer.
+
+## Documentation
+
+The [documentation index](docs/README.md) links the architecture, the interface, the installation
+guide and the [release process](docs/Reference/Release.md). To validate a checkout:
 
 ```sh
-python3 -m unittest discover -s Tests -p 'test_*.py' -v
-python3 Scripts/validate_native.py --executable /absolute/path/to/claude
-python3 Scripts/build_package.py /new/output/directory
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 scripts/validate_native.py --executable /absolute/path/to/claude
 ```
 
-Normal tests use deterministic peers, not a model. Authenticated execution and production activation are separate acceptance steps. See the [interface contract](Documentation/Reference/Interface.md) for retention, cancellation and error semantics and the [documentation index](Documentation/README.md) for ownership.
+Tests use deterministic peers, not a model. Authenticated execution and production activation are
+separate acceptance steps.
 
-The working directory is not an operating-system sandbox. Vendor configuration, credentials and tools retain their own authority; host authorization does not silently approve vendor actions.
+## Contributing
+
+See the [contributor guide](CONTRIBUTING.md).
+
+## License
+
+Computer MCP-owned code and resources use the
+[Functional Source License 1.1, Apache 2.0 Future License](LICENSE) (FSL-1.1-ALv2). Claude Code
+and Anthropic services are external; see the [third-party notices](THIRD_PARTY_NOTICES.md).
