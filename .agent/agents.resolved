@@ -1,0 +1,47 @@
+{
+  "instructions" : {
+    "chatgpt" : {
+
+    },
+    "sections" : [
+      {
+        "hash" : "sha256:db11be83cf53d77bac3d9db12349e8a06552c8fe50cc2580b8b59489274a60f6",
+        "name" : "guide",
+        "path" : ".agent/instructions/guide.md",
+        "source" : "."
+      },
+      {
+        "hash" : "sha256:fd62d32e87fffe411d4ddd1b6b479bb5cb90cafacf0b0b359920a2ac6b52db87",
+        "name" : "shared/plugin-rules",
+        "path" : ".agent/instructions/shared/plugin-rules.md",
+        "revision" : "0c2531e982509bf6aee719cb7398819f64a5f966",
+        "source" : "github.com/computer-mcp/.github"
+      }
+    ],
+    "targets" : {
+      "AGENTS.md" : {
+        "agents" : [
+          "claude-code",
+          "codex"
+        ],
+        "blockHash" : "sha256:6805a9a3f1be7465e85e38c14289b024d026b4e3db6adc4eefeeae5e6aa91b31",
+        "created" : false,
+        "headingOffset" : 0
+      }
+    }
+  },
+  "skills" : {
+
+  },
+  "sources" : {
+    "github.com/computer-mcp/.github" : {
+      "kind" : "git",
+      "path" : ".agent",
+      "requirement" : {
+        "revision" : "0c2531e982509bf6aee719cb7398819f64a5f966"
+      },
+      "url" : "https://github.com/computer-mcp/.github"
+    }
+  },
+  "version" : 1
+}
