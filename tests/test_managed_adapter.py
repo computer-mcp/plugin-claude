@@ -208,6 +208,18 @@ os.execv(sys.executable, [sys.executable, '-B', *sys.argv[2:]])
         retirements = [req for req in host.requests if req['op'] == 'retire']
         self.assertEqual([(req['call'], req['acquisition']) for req in retirements], [(stop, first)])
         self.assertFalse(host.runs[second]['retired'])
+
+        runs = Client.value(self.call(client, '.list', {}))['runs']
+        self.assertEqual({run['run_id'] for run in runs}, {a['run_id'], b['run_id']})
+        cancelled = next(run for run in runs if run['run_id'] == a['run_id'])
+        self.assertEqual(cancelled['state'], 'cancelled')
+        handle = {'run_id': a['run_id']}
+        self.assertIn('events', Client.value(self.call(client, '.events', handle)))
+        self.assertTrue(Client.value(self.call(client, '.release', handle))['released'])
+        missing = Client.value(self.call(client, '.result', handle))
+        self.assertEqual(missing['error']['code'], 'unknown_run')
+        self.assertEqual(sum(req['op'] == 'launch' for req in host.requests), 2)
+
         host.options[second]['hold'] = False
         finished = self.settled(client, b['run_id'])
         self.assertEqual(finished['result'], 'second run')

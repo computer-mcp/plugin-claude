@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -68,14 +69,44 @@ class SourceDriverTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         driver.extract_source(archive, target)
 
-    def test_evidence_requires_fresh_nonzero_exact_cases(self):
+    def test_evidence_requires_one_fresh_test_and_exact_cases(self):
         valid = {'kind':'deterministic','run_id':'fresh','tests_executed':1,
-                 'cases':sorted(driver.CASES)}
-        driver.validate_evidence(valid, 'fresh')
-        for changes in ({'tests_executed':0}, {'tests_executed':True}, {'run_id':'stale'},
-                        {'cases':[]}, {'cases':sorted(driver.CASES)*2}):
+                 'cases':sorted(driver.REGISTERED_CASES)}
+        driver.validate_evidence(valid, 'fresh', driver.REGISTERED_CASES)
+        for changes in ({'tests_executed':0}, {'tests_executed':2}, {'tests_executed':True},
+                        {'run_id':'stale'}, {'cases':[]}, {'cases':valid['cases']*2}):
             with self.assertRaises(ValueError):
-                driver.validate_evidence(dict(valid, **changes), 'fresh')
+                driver.validate_evidence(dict(valid, **changes), 'fresh', driver.REGISTERED_CASES)
+
+    def test_source_selector_and_evidence_cover_every_independent_test(self):
+        fixture = (ROOT / driver.INPUTS[2]).read_text()
+        methods = re.findall(r'@Test func (source\w+)\(', fixture)
+        self.assertCountEqual(methods, driver.SOURCE_CASES.keys())
+        selector = re.compile(driver.SELECTORS['source'])
+        for method in methods:
+            self.assertRegex(f'ComputerMCPMacOSTests.ClaudeSourceIntegrationTests/{method}()', selector)
+        self.assertNotRegex('ClaudeSourceIntegrationTests/registeredManagedPrint()', selector)
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / 'cases.json'
+            report = {'kind': 'deterministic', 'run_id': 'fresh', 'tests_executed': 1}
+            for method, cases in driver.SOURCE_CASES.items():
+                output.with_name(f'cases-{method}.json').write_text(
+                    json.dumps(dict(report, cases=sorted(cases))))
+            fragment = output.with_name('cases-sourceHostRemoval.json')
+            original = fragment.read_text()
+            fragment.unlink()
+            with self.assertRaises(ValueError):
+                driver.collect_evidence(output, 'fresh', 'source')
+            fragment.write_text(json.dumps(dict(json.loads(original), run_id='stale')))
+            with self.assertRaises(ValueError):
+                driver.collect_evidence(output, 'fresh', 'source')
+            self.assertFalse(output.exists())
+            fragment.write_text(original)
+            combined = driver.collect_evidence(output, 'fresh', 'source')
+            self.assertEqual(combined, json.loads(output.read_text()))
+            self.assertEqual(combined['tests_executed'], len(methods))
+            self.assertCountEqual(combined['cases'], set().union(*driver.SOURCE_CASES.values()))
 
     def test_process_exit_timeout_and_log_bound(self):
         with tempfile.TemporaryDirectory() as temp:

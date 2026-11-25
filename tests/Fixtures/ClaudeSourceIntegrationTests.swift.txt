@@ -88,10 +88,8 @@ struct ClaudeSourceIntegrationTests {
     ]).write(to: evidence, options: .atomic)
   }
 
-  @Test func sourceConsumerContract() async throws {
-    let environment = ProcessInfo.processInfo.environment
-    let source = URL(fileURLWithPath: try #require(environment["COMPUTER_MCP_CLAUDE_PLUGIN"]))
-    let package = try PluginPackage.load(at: source)
+  @Test func sourceAdmission() async throws {
+    let package = try sourceClaudePackage()
     try #require(package.manifest.id == "claude")
     try #require(package.manifest.permissions?.map(\.id) == [.project])
     try #require(package.manifest.permissions?.first?.access == .write)
@@ -111,8 +109,6 @@ struct ClaudeSourceIntegrationTests {
     ] {
       try #require(reviewed.requirements(for: name)?.project == .write)
     }
-    var cases = ["declarations"]
-
     for (caller, provider) in [("none", "write"), ("write", "none")] {
       try await withClaudeHarness(package, caller: caller, provider: provider) { h in
         try claudePermissionDenied(await h.mcp("claude.run", ["prompt": .string("must-not-run")]))
@@ -154,9 +150,13 @@ struct ClaudeSourceIntegrationTests {
       try #require(h.base.observations.members.count == processesBefore)
       try #require(h.callCount == 0)
     }
-    cases += ["development-registration", "dual-principal", "read-write", "skills"]
+    try sourceClaudeEvidence(
+      "sourceAdmission",
+      ["declarations", "development-registration", "dual-principal", "read-write", "skills"])
+  }
 
-    try await withClaudeHarness(package) { h in
+  @Test func sourceExecutionLifecycle() async throws {
+    try await withClaudeHarness(sourceClaudePackage()) { h in
       let cli = try claudePayload(await h.cli("--leading 'quotes' 中文\nnot-a-shell-command"))
       try #require(cli["exit_code"] == .integer(0))
       try #require(h.callCount == 1)
@@ -208,10 +208,8 @@ struct ClaudeSourceIntegrationTests {
       try #require(
         try String(contentsOf: h.worktree.appendingPathComponent("selected-write"), encoding: .utf8)
           == "worktree")
-      let listing = try claudePayload(await h.mcp("claude.run.list"))
-      for run in try #require(listing["runs"]?.arrayValue) {
-        let id = try #require(run.objectValue?["run_id"]?.stringValue)
-        _ = try claudePayload(await h.mcp("claude.run.release", ["run_id": .string(id)]))
+      for result in [run, second] {
+        try await h.releaseRun(try #require(result["run_id"]?.stringValue))
       }
       let session = "12345678-1234-4234-9234-123456789012"
       let resumed = try claudePayload(
@@ -224,18 +222,20 @@ struct ClaudeSourceIntegrationTests {
         try claudePayload(await h.mcp("claude.run.result", ["run_id": .string(id)]))["result"]
           == .string("continued"))
       _ = try claudePayload(await h.mcp("claude.run.events", ["run_id": .string(id)]))
-      _ = try claudePayload(await h.mcp("claude.run.release", ["run_id": .string(id)]))
-      let released = try claudePayload(await h.mcp("claude.run.list"))
-      try #require(released["runs"]?.arrayValue?.isEmpty == true)
+      try await h.releaseRun(id)
       try await claudeDenied(await h.mcp("claude.run.result", ["run_id": .string(id)]))
       try await h.cancelRetained()
     }
-    cases += [
-      "cli", "mcp", "worktree-boundaries", "container-persistence", "continuation", "cancellation",
-    ]
+    try sourceClaudeEvidence(
+      "sourceExecutionLifecycle",
+      [
+        "cli", "mcp", "worktree-boundaries", "container-persistence", "continuation",
+        "cancellation",
+      ])
+  }
 
-    // A different profile's revocation must leave this retained execution intact.
-    try await withClaudeHarness(package) { h in
+  @Test func sourceCallerRevocation() async throws {
+    try await withClaudeHarness(sourceClaudePackage()) { h in
       let id = try #require(
         try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))["run_id"]?
           .stringValue)
@@ -260,7 +260,11 @@ struct ClaudeSourceIntegrationTests {
       try await claudeDenied(await h.mcp("claude.run.result", ["run_id": .string(id)]))
       try await h.waitJoined()
     }
-    try await withClaudeHarness(package) { h in
+    try sourceClaudeEvidence("sourceCallerRevocation", ["scoped-revocation"])
+  }
+
+  @Test func sourceProviderRevocation() async throws {
+    try await withClaudeHarness(sourceClaudePackage()) { h in
       _ = try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))
       try await h.waitReady()
       let service = h.gateway.permissionRuntime.service
@@ -275,22 +279,34 @@ struct ClaudeSourceIntegrationTests {
       try #require(h.callCount == before)
       try await h.waitJoined()
     }
-    cases += ["scoped-revocation"]
+    try sourceClaudeEvidence("sourceProviderRevocation", ["provider-revocation"])
+  }
 
-    try await withClaudeHarness(package) { h in
+  @Test func sourceHostRemoval() async throws {
+    try await withClaudeHarness(sourceClaudePackage()) { h in
       _ = try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))
       try await h.waitReady()
       try await h.removeSelected()
       try await h.waitJoined()
       try #require(!FileManager.default.fileExists(atPath: h.worktree.path))
     }
-    cases += ["host-removal", "cleanup"]
-    let output = URL(fileURLWithPath: try #require(environment["COMPUTER_MCP_CLAUDE_CASES"]))
-    try JSONSerialization.data(withJSONObject: [
-      "kind": "deterministic", "tests_executed": 1,
-      "run_id": try #require(environment["COMPUTER_MCP_CLAUDE_RUN_ID"]), "cases": cases,
-    ]).write(to: output, options: .atomic)
+    try sourceClaudeEvidence("sourceHostRemoval", ["host-removal", "cleanup"])
   }
+}
+
+private func sourceClaudePackage() throws -> PluginPackage {
+  let path = try #require(ProcessInfo.processInfo.environment["COMPUTER_MCP_CLAUDE_PLUGIN"])
+  return try PluginPackage.load(at: URL(fileURLWithPath: path))
+}
+
+private func sourceClaudeEvidence(_ test: String, _ cases: [String]) throws {
+  let environment = ProcessInfo.processInfo.environment
+  let output = URL(fileURLWithPath: try #require(environment["COMPUTER_MCP_CLAUDE_CASES"]))
+    .deletingLastPathComponent().appendingPathComponent("cases-\(test).json")
+  try JSONSerialization.data(withJSONObject: [
+    "kind": "deterministic", "tests_executed": 1,
+    "run_id": try #require(environment["COMPUTER_MCP_CLAUDE_RUN_ID"]), "cases": cases,
+  ]).write(to: output, options: .atomic)
 }
 
 private func claudeMCPResult(_ result: JSONValue) -> [String: JSONValue]? {
@@ -628,12 +644,20 @@ private final class ClaudeHarness: @unchecked Sendable {
       ])
   }
 
-  func mcp(_ name: String, _ arguments: [String: JSONValue] = [:]) async throws -> JSONValue {
+  func mcp(
+    _ name: String, _ arguments: [String: JSONValue] = [:], owner: JSONValue? = nil
+  ) async throws -> JSONValue {
+    let input = JSONValue.object([
+      "server": .string("claude-stream"), "tool": .string(name), "arguments": .object(arguments),
+    ])
     let response = try await consumerRouter.callToolForMCPAsync(
-      name: "mcp.tools.call",
-      arguments: .object([
-        "server": .string("claude-stream"), "tool": .string(name), "arguments": .object(arguments),
-      ]), context: .empty)
+      name: owner == nil ? "mcp.tools.call" : "runtime.owners.call",
+      arguments: owner.map {
+        .object([
+          "project_id": .string(projects[0]), "owner": $0, "tool": .string("mcp.tools.call"),
+          "arguments": input,
+        ])
+      } ?? input, context: .empty)
     lastMCPResponse = response
     return response
   }
@@ -712,29 +736,66 @@ private final class ClaudeHarness: @unchecked Sendable {
   }
 
   func cancelRetained() async throws {
+    let before = callCount
     let id = try #require(
       try claudePayload(await mcp("claude.run.start", ["prompt": .string("hold")]))["run_id"]?
         .stringValue)
     try await waitReady()
-    try await claudeDenied(await mcp("claude.run.release", ["run_id": .string(id)]))
-    _ = try claudePayload(await mcp("claude.run.cancel", ["run_id": .string(id)]))
-    var settled: [String: JSONValue] = [:]
-    for _ in 0..<500 {
-      // A cancelled run is intentionally a downstream tool error with retained data.
-      let response = try await mcp("claude.run.result", ["run_id": .string(id)])
-      settled =
-        response.objectValue?["structuredContent"]?.objectValue?["result"]?.objectValue?[
-          "structuredContent"]?.objectValue?["result"]?.objectValue ?? [:]
-      if settled["completed"] == .bool(true) { break }
-      try await Task.sleep(for: .milliseconds(20))
+    let handle: [String: JSONValue] = ["run_id": .string(id)]
+    let active = try await mcp("claude.run.release", handle)
+    try #require(
+      claudeMCPResult(active)?["error"]?.objectValue?["code"] == .string("run_active"))
+    let cancellation = try claudePayload(await mcp("claude.run.cancel", handle))
+    try #require(cancellation["cancel_requested"] == .bool(true))
+    let result = try await settled(id)
+    try #require(
+      result["cleanup_confirmed"] == .bool(true) && result["state"] == .string("cancelled"))
+    try #require(result["error"]?.objectValue?["code"] == .string("cancelled"))
+
+    // The handle-free list is local to its connection. Select the write carrier
+    // explicitly so Host authorizes the read against the instance retaining this run.
+    let owner = try #require(try await retainedOwner(id))
+    let listing = try claudePayload(await mcp("claude.run.list", owner: owner))
+    let runs = try #require(listing["runs"]?.arrayValue)
+    try #require(runs.count == 1 && runs.first?.objectValue?["run_id"] == .string(id))
+    try #require(runs.first?.objectValue?["state"] == .string("cancelled"))
+    _ = try claudePayload(await mcp("claude.run.events", handle))
+    try await releaseRun(id)
+    for _ in 0..<40 {
+      if try await retainedOwner(id) == nil {
+        let released = try await mcp("claude.run.result", handle)
+        try #require(
+          claudeMCPResult(released)?["error"]?.objectValue?["code"] == .string("unknown_run"))
+        try #require(callCount == before + 1)
+        return
+      }
+      try await Task.sleep(for: .milliseconds(50))
     }
-    try #require(
-      settled["cleanup_confirmed"] == .bool(true) && settled["state"] == .string("cancelled"))
-    let listing = try claudePayload(await mcp("claude.run.list"))
-    try #require(listing["runs"]?.arrayValue?.count == 1)
-    _ = try claudePayload(await mcp("claude.run.release", ["run_id": .string(id)]))
-    try #require(
-      try claudePayload(await mcp("claude.run.list"))["runs"]?.arrayValue?.isEmpty == true)
+    throw ClaudeConsumerError.checkpoint
+  }
+
+  func releaseRun(_ id: String) async throws {
+    let result = try claudePayload(await mcp("claude.run.release", ["run_id": .string(id)]))
+    try #require(result["run_id"] == .string(id) && result["released"] == .bool(true))
+  }
+
+  private func retainedOwner(_ id: String) async throws -> JSONValue? {
+    let response = try await consumerRouter.callToolForMCPAsync(
+      name: "runtime.owners.list",
+      arguments: .object(["project_id": .string(projects[0]), "server": .string("claude-stream")]),
+      context: .empty)
+    let rows = try #require(try claudePayload(response)["owners"]?.arrayValue)
+    let matches = rows.compactMap { row -> JSONValue? in
+      guard let fields = row.objectValue, fields["kind"] == .string("mcpResource"),
+        let encoded = fields["resource_id"]?.stringValue,
+        let resource = try? JSONDecoder().decode(JSONValue.self, from: Data(encoded.utf8)),
+        resource.objectValue?["kind"] == .string("claude.run"),
+        resource.objectValue?["id"] == .string(id)
+      else { return nil }
+      return fields["owner"]
+    }
+    try #require(matches.count <= 1)
+    return matches.first
   }
 
   func removeSelected() async throws {

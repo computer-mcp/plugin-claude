@@ -19,17 +19,21 @@ import tarfile
 import time
 
 FIXTURE = "ClaudeSourceIntegrationTests.swift"
-CASES = {
-    "declarations", "development-registration", "dual-principal", "read-write",
-    "cli", "mcp", "skills", "worktree-boundaries", "container-persistence",
-    "continuation", "cancellation", "scoped-revocation", "host-removal", "cleanup",
+SOURCE_CASES = {
+    "sourceAdmission": {"declarations", "development-registration", "dual-principal", "read-write", "skills"},
+    "sourceExecutionLifecycle": {
+        "cli", "mcp", "worktree-boundaries", "container-persistence", "continuation", "cancellation",
+    },
+    "sourceCallerRevocation": {"scoped-revocation"},
+    "sourceProviderRevocation": {"provider-revocation"},
+    "sourceHostRemoval": {"host-removal", "cleanup"},
 }
 REGISTERED_CASES = {
     "installed-reviewed-archive", "print-stdin-eof", "addressed-retirement",
     "independent-run", "native-final-and-exit", "retained-release",
 }
 SELECTORS = {
-    "source": "ClaudeSourceIntegrationTests.sourceConsumerContract",
+    "source": "ClaudeSourceIntegrationTests[./](" + "|".join(SOURCE_CASES) + ")",
     "registered-print": "ClaudeSourceIntegrationTests.registeredManagedPrint",
 }
 INPUTS = (
@@ -158,13 +162,40 @@ def export_source(root, sha, destination, environment, output):
         archive.unlink(missing_ok=True)
 
 
-def validate_evidence(observed, run_id, expected_cases=CASES):
+def validate_evidence(observed, run_id, expected_cases):
     cases = observed.get("cases")
     if (observed.get("kind") != "deterministic" or observed.get("run_id") != run_id
-            or type(observed.get("tests_executed")) is not int or observed["tests_executed"] < 1
+            or type(observed.get("tests_executed")) is not int or observed["tests_executed"] != 1
             or not isinstance(cases, list) or len(cases) != len(expected_cases)
             or any(not isinstance(case, str) for case in cases) or set(cases) != expected_cases):
         raise ValueError("Consumer case evidence is incomplete, duplicated or stale")
+
+
+def read_case_evidence(path, run_id, expected_cases):
+    if path.stat().st_size > 65536:
+        raise ValueError("Case evidence exceeds its bound")
+    observed = json.loads(path.read_text())
+    validate_evidence(observed, run_id, expected_cases)
+    return observed
+
+
+def collect_evidence(evidence, run_id, suite):
+    if suite == "registered-print":
+        return read_case_evidence(evidence, run_id, REGISTERED_CASES)
+    fragments = {
+        f"cases-{test}.json": cases for test, cases in SOURCE_CASES.items()
+    }
+    if {path.name for path in evidence.parent.glob("cases-*.json")} != fragments.keys():
+        raise ValueError("Source consumer must report evidence for every selected test")
+    cases = []
+    for name, expected in fragments.items():
+        cases.extend(read_case_evidence(evidence.with_name(name), run_id, expected)["cases"])
+    observed = {"kind": "deterministic", "run_id": run_id,
+                "tests_executed": len(fragments), "cases": sorted(cases)}
+    with evidence.open("x") as destination:
+        json.dump(observed, destination, indent=2, sort_keys=True)
+        destination.write("\n")
+    return observed
 
 
 def run(args):
@@ -222,10 +253,7 @@ def run(args):
             ["/usr/bin/swift", "test", "--build-system", "native", "--scratch-path",
              str(output / "build"), "--no-parallel", "--filter", SELECTORS[suite]],
             host, environment, output / "swift-test.log", args.timeout)
-        if evidence.stat().st_size > 65536:
-            raise ValueError("Case evidence exceeds its bound")
-        observed = json.loads(evidence.read_text())
-        validate_evidence(observed, run_id, REGISTERED_CASES if suite == "registered-print" else CASES)
+        observed = collect_evidence(evidence, run_id, suite)
         if {name: digest(args.plugin_source / name) for name in INPUTS} != before:
             raise ValueError("Source input changed during verification")
         result["cases"] = sorted(observed["cases"])
