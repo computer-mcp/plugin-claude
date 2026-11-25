@@ -341,6 +341,7 @@ private final class ClaudeHarness: @unchecked Sendable {
   let base: FixedHostFixture
   let lifecycle: GatewayStandaloneGenerations
   let gateway: GatewayRuntime
+  let consumerRouter: GatewayStandaloneGenerations
   let owner: GatewayPermissionOwner
   let consumerID: GatewayProfileID
   let worktree: URL
@@ -358,6 +359,7 @@ private final class ClaudeHarness: @unchecked Sendable {
     self.base = base
     self.lifecycle = lifecycle
     self.gateway = gateway
+    self.consumerRouter = GatewayStandaloneGenerations(gateway)
     self.owner = owner
     self.consumerID = consumerID
     self.projects = projects
@@ -607,7 +609,7 @@ private final class ClaudeHarness: @unchecked Sendable {
   }
 
   func mcp(_ name: String, _ arguments: [String: JSONValue] = [:]) async throws -> JSONValue {
-    let response = try await gateway.callToolForMCPAsync(
+    let response = try await consumerRouter.callToolForMCPAsync(
       name: "mcp.tools.call",
       arguments: .object([
         "server": .string("claude-stream"), "tool": .string(name), "arguments": .object(arguments),
