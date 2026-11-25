@@ -54,6 +54,10 @@ jobs:
   runtime:
     uses: computer-mcp/github-workflows/.github/workflows/plugin-runtime.yml@fd25fcface41732fda099017c6945912366fc7c1
   host-consumer:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [source, registered-print]
     runs-on: macos-26
     timeout-minutes: 30
     env:
@@ -65,9 +69,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.14'
-      - name: Verify the registered print consumer against pinned Host source
+      - name: Verify the consumer against pinned Host source
         shell: bash
         env:
+          SUITE: ${{ matrix.suite }}
           GIT_TERMINAL_PROMPT: '0'
           GIT_ASKPASS: /usr/bin/false
           GIT_CONFIG_GLOBAL: /dev/null
@@ -83,21 +88,21 @@ jobs:
             https://github.com/computer-mcp/computer-mcp.git "$host_sha"
           git -C "$host_source" checkout --detach "$host_sha"
           test "$(git -C "$host_source" rev-parse HEAD)" = "$host_sha"
-          python3 -B scripts/validate_host.py --suite registered-print \
+          python3 -B scripts/validate_host.py --suite "$SUITE" \
             --host-source "$host_source" --host-sha "$host_sha" \
             --plugin-source "$PWD" --plugin-sha "$plugin_sha" \
-            --output "$RUNNER_TEMP/claude-registered-print" --timeout 1200
-      - name: Retain registered print evidence
+            --output "$RUNNER_TEMP/host-consumer" --timeout 1200
+      - name: Retain consumer evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: claude-host-consumer-${{ github.sha }}
+          name: claude-host-consumer-${{ matrix.suite }}-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/claude-registered-print/receipt.json
-            ${{ runner.temp }}/claude-registered-print/cases.json
-            ${{ runner.temp }}/claude-registered-print/*-export.log
-            ${{ runner.temp }}/claude-registered-print/package-build.log
-            ${{ runner.temp }}/claude-registered-print/swift-test.log
+            ${{ runner.temp }}/host-consumer/receipt.json
+            ${{ runner.temp }}/host-consumer/cases.json
+            ${{ runner.temp }}/host-consumer/*-export.log
+            ${{ runner.temp }}/host-consumer/package-build.log
+            ${{ runner.temp }}/host-consumer/swift-test.log
           if-no-files-found: ignore
           retention-days: 14
   validate:
