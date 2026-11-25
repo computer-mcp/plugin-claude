@@ -1,0 +1,103 @@
+{
+  "capability": "io.github.computer-mcp/vendor-execution-v1",
+  "dependency": "claude-code",
+  "probe": [
+    "--version"
+  ],
+  "version_stdout": "2.1.59 (Claude Code)\n",
+  "workload": {
+    "kind": "print",
+    "argv": [
+      {
+        "kind": "literal",
+        "value": "-p"
+      },
+      {
+        "kind": "literal",
+        "value": "--output-format"
+      },
+      {
+        "kind": "literal",
+        "value": "stream-json"
+      },
+      {
+        "kind": "literal",
+        "value": "--verbose"
+      },
+      {
+        "kind": "literal",
+        "value": "--include-partial-messages"
+      },
+      {
+        "kind": "option",
+        "parameter": "permission_mode",
+        "flag": "--permission-mode",
+        "style": "separate",
+        "default": "dontAsk"
+      },
+      {
+        "kind": "option",
+        "parameter": "model",
+        "flag": "--model",
+        "style": "equals"
+      },
+      {
+        "kind": "option",
+        "parameter": "resume_session_id",
+        "flag": "--resume",
+        "style": "equals"
+      },
+      {
+        "kind": "option",
+        "parameter": "session_id",
+        "flag": "--session-id",
+        "style": "equals"
+      },
+      {
+        "kind": "option",
+        "parameter": "max_budget_usd",
+        "flag": "--max-budget-usd",
+        "style": "equals"
+      },
+      {
+        "kind": "option",
+        "parameter": "effort",
+        "flag": "--effort",
+        "style": "equals"
+      },
+      {
+        "kind": "option",
+        "parameter": "append_system_prompt",
+        "flag": "--append-system-prompt",
+        "style": "equals"
+      },
+      {
+        "kind": "flag",
+        "parameter": "continue_previous",
+        "flag": "--continue"
+      },
+      {
+        "kind": "flag",
+        "parameter": "no_session_persistence",
+        "flag": "--no-session-persistence"
+      },
+      {
+        "kind": "literal",
+        "value": "--"
+      },
+      {
+        "kind": "positional",
+        "parameter": "prompt"
+      }
+    ]
+  },
+  "tools": {
+    "claude.run": "acquire",
+    "claude.run.start": "detached_acquire",
+    "claude.run.list": "observe",
+    "claude.run.result": "observe",
+    "claude.run.events": "observe",
+    "claude.run.cancel": "close",
+    "claude.run.release": "observe"
+  }
+}

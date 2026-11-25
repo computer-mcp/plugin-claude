@@ -15,3 +15,19 @@ Do not commit caches, local credentials or generated runtime state. Publishing a
 
 Contributions are licensed under this repository's [LICENSE](LICENSE),
 FSL-1.1-ALv2.
+
+For declaration changes, compare manifest MCP defaults/overrides with the actual
+adapter catalog. Requirements belong only in the manifest. Keep CLI/Skills
+admission deterministic and preserve native permission and retained-work rules.
+The source consumer takes explicit clean full revisions and never edits the host
+checkout; follow the installation guide. Its Swift companion needs separate
+serialized host build/runtime acceptance. A lint pass is not that evidence.
+Run `python3 scripts/validate_host.py --help` for the source driver and
+`python3 scripts/validate_archive.py --help` for the separate archive check.
+Do not choose a moving host reference or substitute archive results for provider
+approval, container, worktree or revocation evidence.
+
+
+Update the `mcp.vendor_execution.files` digests when a reviewed adapter input
+changes. The package builder verifies them against the archive contents. Use
+`scripts/validate_host.py --suite registered-print` for the exact Host pair.

@@ -1,0 +1,760 @@
+import ComputerMCPMacOS
+import ComputerMCPPermissions
+import ComputerMCPTestSupport
+import Foundation
+import Testing
+
+@testable import ComputerMCPConfiguration
+@testable import ComputerMCPCore
+@testable import ComputerMCPGateway
+@testable import ComputerMCPPlugins
+
+@Suite(.nativeIntegration, .serialized, .timeLimit(.minutes(8)))
+struct ClaudeSourceIntegrationTests {
+  @Test func registeredManagedPrint() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    _ = try #require(environment["COMPUTER_MCP_CLAUDE_ARCHIVE"])
+    _ = try #require(environment["COMPUTER_MCP_CLAUDE_ARCHIVE_SHA256"])
+    let source = URL(fileURLWithPath: try #require(environment["COMPUTER_MCP_CLAUDE_PLUGIN"]))
+    let package = try PluginPackage.load(at: source)
+    try await withClaudeHarness(package) { h in
+      let siblingSession = "12345678-1234-4234-9234-123456789013"
+      let failedSession = "12345678-1234-4234-9234-123456789014"
+      let a = try claudePayload(
+        await h.mcp("claude.run.start", ["prompt": .string("hold")]))
+      let aID = try #require(a["run_id"]?.stringValue)
+      try await h.waitReady()
+      let b = try claudePayload(
+        await h.mcp(
+          "claude.run.start",
+          ["prompt": .string("sibling"), "session_id": .string(siblingSession)]))
+      let bID = try #require(b["run_id"]?.stringValue)
+      try #require(aID != bID)
+      try await h.waitReady("sibling-ready")
+      let aPID = try String(
+        contentsOf: h.worktree.appendingPathComponent("native-ready"), encoding: .utf8)
+      let bPID = try String(
+        contentsOf: h.worktree.appendingPathComponent("sibling-ready"), encoding: .utf8)
+      try #require(aPID != bPID)
+      let aOwner = try #require(
+        h.base.observations.ownerships.first {
+          (try? $0.recoveryState().root.processID) == Int32(aPID)
+        })
+      let bOwner = try #require(
+        h.base.observations.ownerships.first {
+          (try? $0.recoveryState().root.processID) == Int32(bPID)
+        })
+      _ = try claudePayload(await h.mcp("claude.run.cancel", ["run_id": .string(aID)]))
+      let stopped = try await h.settled(aID)
+      try #require(
+        stopped["state"] == .string("cancelled") && stopped["cleanup_confirmed"] == .bool(true))
+      try #require(try await aOwner.members().isEmpty)
+      let liveSibling = try await bOwner.members()
+      try #require(liveSibling.contains { $0.processID == Int32(bPID) })
+      try #require(
+        try claudePayload(await h.mcp("claude.run.result", ["run_id": .string(bID)]))["completed"]
+          == .bool(false))
+      try Data().write(to: h.worktree.appendingPathComponent("finish-sibling"))
+      let completed = try await h.settled(bID)
+      try #require(
+        completed["result"] == .string("sibling") && completed["exit_code"] == .integer(0))
+      try #require(completed["cleanup_confirmed"] == .bool(true))
+      try #require(try await bOwner.members().isEmpty)
+      try #require(completed["session_id"] == .string(siblingSession))
+      let error = try await h.mcp(
+        "claude.run",
+        [
+          "prompt": .string("nonzero-after-final"), "permission_mode": .string("plan"),
+          "session_id": .string(failedSession),
+        ])
+      let native = try #require(claudeMCPResult(error))
+      try #require(native["is_error"] == .bool(true) && native["exit_code"] == .integer(23))
+      try #require(native["session_id"] == .string(failedSession))
+      try #require(native["final_event"]?.objectValue?["result"] == .string("nonzero-after-final"))
+      try #require(native["cleanup_confirmed"] == .bool(true))
+      for id in [aID, bID, try #require(native["run_id"]?.stringValue)] {
+        _ = try claudePayload(await h.mcp("claude.run.release", ["run_id": .string(id)]))
+      }
+      try #require(h.callCount == 3)
+    }
+    let evidence = URL(fileURLWithPath: try #require(environment["COMPUTER_MCP_CLAUDE_CASES"]))
+    try JSONSerialization.data(withJSONObject: [
+      "kind": "deterministic", "run_id": try #require(environment["COMPUTER_MCP_CLAUDE_RUN_ID"]),
+      "tests_executed": 1,
+      "cases": [
+        "installed-reviewed-archive", "print-stdin-eof", "addressed-retirement",
+        "independent-run", "native-final-and-exit", "retained-release",
+      ],
+    ]).write(to: evidence, options: .atomic)
+  }
+
+  @Test func sourceConsumerContract() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    let source = URL(fileURLWithPath: try #require(environment["COMPUTER_MCP_CLAUDE_PLUGIN"]))
+    let package = try PluginPackage.load(at: source)
+    try #require(package.manifest.id == "claude")
+    try #require(package.manifest.permissions?.map(\.id) == [.project])
+    try #require(package.manifest.permissions?.first?.access == .write)
+    try #require(package.manifest.sandbox == nil)
+    try #require(package.manifest.cli.map(\.id) == ["claude"])
+    try #require(package.manifest.mcp.map(\.id) == ["stream"])
+    try #require(package.manifest.skills.map(\.id) == ["claude-code"])
+    let reviewed = try PluginContributionRequirements(
+      sourceDigest: PluginStore.manifestDigest(package.manifest),
+      declarations: .init(package.manifest), componentID: "stream")
+    for name in ["claude.run.list", "claude.run.result", "claude.run.events"] {
+      try #require(reviewed.requirements(for: name)?.project == .read)
+    }
+    for name in [
+      "claude.run", "claude.run.start", "claude.run.cancel", "claude.run.release",
+      "Claude.run.list",
+    ] {
+      try #require(reviewed.requirements(for: name)?.project == .write)
+    }
+    var cases = ["declarations"]
+
+    for (caller, provider) in [("none", "write"), ("write", "none")] {
+      try await withClaudeHarness(package, caller: caller, provider: provider) { h in
+        try claudePermissionDenied(await h.mcp("claude.run", ["prompt": .string("must-not-run")]))
+        try claudePermissionDenied(await h.cli("must-not-run"))
+        try #require(h.callCount == 0)
+      }
+    }
+    // Without Plugin use, discovery itself is permission-gated; it cannot supply a call catalog.
+    try await withClaudeHarness(package, use: false) { h in
+      try claudePermissionDenied(await h.catalog())
+      try claudePermissionDenied(await h.cli("must-not-run"))
+      try claudePermissionDenied(await h.skill())
+      try #require(h.callCount == 0)
+    }
+    // CLI is always Project write. MCP exact inspection overrides admit Project read.
+    try await withClaudeHarness(package, caller: "read") { h in
+      let value = try claudePayload(await h.mcp("claude.run.list"))
+      try #require(value["runs"]?.arrayValue?.isEmpty == true)
+      try claudePermissionDenied(
+        await h.mcp("claude.run.start", ["prompt": .string("must-not-run")]))
+      try claudePermissionDenied(await h.cli("must-not-run"))
+      try #require(h.callCount == 0)
+      try #require(
+        try claudePayload(await h.skill())["content"]?.stringValue?.contains("Claude") == true)
+    }
+    // Explicit denial is distinct from the requestable missing Project/Plugin grants above.
+    try await withClaudeHarness(package, skills: false) { h in
+      let requestsBefore = Set(
+        try h.gateway.permissionRuntime.service.view(owner: h.owner).requests.map { $0.request.id })
+      let processesBefore = h.base.observations.members.count
+      let response = try await h.skill()
+      try claudePermissionDenied(response)
+      try #require(
+        response.objectValue?["structuredContent"]?.objectValue?["error"]?.objectValue?["code"]
+          == .string("permission.denied"))
+      let requestsAfter = Set(
+        try h.gateway.permissionRuntime.service.view(owner: h.owner).requests.map { $0.request.id })
+      try #require(requestsAfter == requestsBefore)
+      try #require(h.base.observations.members.count == processesBefore)
+      try #require(h.callCount == 0)
+    }
+    cases += ["development-registration", "dual-principal", "read-write", "skills"]
+
+    try await withClaudeHarness(package) { h in
+      let cli = try claudePayload(await h.cli("--leading 'quotes' 中文\nnot-a-shell-command"))
+      try #require(cli["exit_code"] == .integer(0))
+      try #require(h.callCount == 1)
+      let calls = try String(
+        contentsOf: h.worktree.appendingPathComponent("native-calls.jsonl"), encoding: .utf8)
+      let firstCall = try #require(calls.split(separator: "\n").first)
+      let nativeCall = try #require(
+        JSONSerialization.jsonObject(with: Data(firstCall.utf8)) as? [String: Any])
+      try #require(nativeCall["mode"] as? String == "dontAsk")
+      try #require(
+        (nativeCall["argv"] as? [String])?.suffix(2) == [
+          "--", "--leading 'quotes' 中文\nnot-a-shell-command",
+        ])
+
+      let run = try claudePayload(await h.mcp("claude.run", ["prompt": .string("boundaries")]))
+      try #require(run["cleanup_confirmed"] == .bool(true))
+      let text = try #require(run["result"]?.stringValue)
+      let observed = try #require(
+        JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+      let observedCWD = URL(fileURLWithPath: try #require(observed["cwd"] as? String))
+      try #require(
+        observedCWD.resolvingSymlinksInPath().standardizedFileURL
+          == h.worktree.resolvingSymlinksInPath().standardizedFileURL)
+      try #require(observed["denied"] as? [[String]] == h.outside.map { _ in ["read", "write"] })
+      let locations = try #require(observed["locations"] as? [String: String])
+      let container = try h.base.database.prepareProviderContainer(.package("claude")).sandbox
+      try #require(locations["HOME"] == container.home.value)
+      try #require(locations["XDG_CACHE_HOME"] == container.cache.value)
+      try #require(locations["XDG_STATE_HOME"] == container.state.value)
+      let second = try claudePayload(await h.mcp("claude.run", ["prompt": .string("boundaries")]))
+      try #require(second["cleanup_confirmed"] == .bool(true))
+      for directory in [container.home.value, container.cache.value, container.state.value] {
+        try #require(
+          try String(contentsOfFile: directory + "/claude-consumer-marker", encoding: .utf8) == "xx"
+        )
+      }
+      for path in h.outside {
+        try #require(try String(contentsOf: path, encoding: .utf8) == "sentinel")
+      }
+      try #require(
+        try String(contentsOf: h.worktree.appendingPathComponent("selected-write"), encoding: .utf8)
+          == "worktree")
+      try #require(
+        !FileManager.default.fileExists(
+          atPath: try #require(locations["TMPDIR"]) + "/claude-consumer-marker"))
+      let listing = try claudePayload(await h.mcp("claude.run.list"))
+      for run in try #require(listing["runs"]?.arrayValue) {
+        let id = try #require(run.objectValue?["run_id"]?.stringValue)
+        _ = try claudePayload(await h.mcp("claude.run.release", ["run_id": .string(id)]))
+      }
+      let session = "12345678-1234-4234-9234-123456789012"
+      let resumed = try claudePayload(
+        await h.mcp(
+          "claude.run", ["prompt": .string("continued"), "resume_session_id": .string(session)]))
+      try #require(resumed["session_id"] == .string(session))
+      try #require(resumed["result"] == .string("continued"))
+      let id = try #require(resumed["run_id"]?.stringValue)
+      try #require(
+        try claudePayload(await h.mcp("claude.run.result", ["run_id": .string(id)]))["result"]
+          == .string("continued"))
+      _ = try claudePayload(await h.mcp("claude.run.events", ["run_id": .string(id)]))
+      _ = try claudePayload(await h.mcp("claude.run.release", ["run_id": .string(id)]))
+      let released = try claudePayload(await h.mcp("claude.run.list"))
+      try #require(released["runs"]?.arrayValue?.isEmpty == true)
+      try await claudeDenied(await h.mcp("claude.run.result", ["run_id": .string(id)]))
+      try await h.cancelRetained()
+    }
+    cases += [
+      "cli", "mcp", "worktree-boundaries", "container-persistence", "continuation", "cancellation",
+    ]
+
+    // A different profile's revocation must leave this retained execution intact.
+    try await withClaudeHarness(package) { h in
+      let id = try #require(
+        try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))["run_id"]?
+          .stringValue)
+      try await h.waitReady()
+      let service = h.gateway.permissionRuntime.service
+      let unrelated = try #require(GatewayProfileID(rawValue: "claude-unrelated"))
+      try h.base.database.saveProfile(
+        .init(
+          id: unrelated, permissions: fixturePermissions([.plugin("claude"): .granted(.use)]),
+          allowedCallers: [.localMCP]))
+      _ = try service.revokePermission(
+        .plugin("claude"), profileID: unrelated, owner: h.owner,
+        expectedRevision: service.view(owner: h.owner).revision)
+      try await h.gateway.permissionRuntime.coordinator.reconcile()
+      try #require(
+        try claudePayload(await h.mcp("claude.run.result", ["run_id": .string(id)]))["completed"]
+          == .bool(false))
+      _ = try service.revokePermission(
+        .plugin("claude"), profileID: h.consumerID, owner: h.owner,
+        expectedRevision: service.view(owner: h.owner).revision)
+      try await h.gateway.permissionRuntime.coordinator.reconcile()
+      try await claudeDenied(await h.mcp("claude.run.result", ["run_id": .string(id)]))
+      try await h.waitJoined()
+    }
+    try await withClaudeHarness(package) { h in
+      _ = try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))
+      try await h.waitReady()
+      let service = h.gateway.permissionRuntime.service
+      let view = try service.view(owner: h.owner)
+      let provider = try #require(view.providers.first { $0.identity == .package("claude") })
+      _ = try service.revokeProvider(
+        provider.identity, owner: h.owner, expectedProviderRevision: provider.revision,
+        expectedRevision: view.revision)
+      try await h.gateway.permissionRuntime.coordinator.reconcile()
+      let before = h.callCount
+      try await claudeDenied(await h.mcp("claude.run", ["prompt": .string("must-not-run")]))
+      try #require(h.callCount == before)
+      try await h.waitJoined()
+    }
+    cases += ["scoped-revocation"]
+
+    try await withClaudeHarness(package) { h in
+      _ = try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))
+      try await h.waitReady()
+      try await h.removeSelected()
+      try await h.waitJoined()
+      try #require(!FileManager.default.fileExists(atPath: h.worktree.path))
+    }
+    cases += ["host-removal", "cleanup"]
+    let output = URL(fileURLWithPath: try #require(environment["COMPUTER_MCP_CLAUDE_CASES"]))
+    try JSONSerialization.data(withJSONObject: [
+      "kind": "deterministic", "tests_executed": 1,
+      "run_id": try #require(environment["COMPUTER_MCP_CLAUDE_RUN_ID"]), "cases": cases,
+    ]).write(to: output, options: .atomic)
+  }
+}
+
+private func claudeMCPResult(_ result: JSONValue) -> [String: JSONValue]? {
+  result.objectValue?["structuredContent"]?.objectValue?["result"]?
+    .objectValue?["structuredContent"]?.objectValue?["result"]?.objectValue
+}
+
+private func claudePayload(_ result: JSONValue) throws -> [String: JSONValue] {
+  try #require(result.objectValue?["isError"] != .bool(true), "\(result)")
+  var value = try #require(result.objectValue?["structuredContent"]?.objectValue?["result"])
+  if let nested = value.objectValue?["structuredContent"]?.objectValue?["result"] {
+    try #require(value.objectValue?["isError"] != .bool(true), "\(value)")
+    value = nested
+  }
+  return try #require(value.objectValue)
+}
+
+private func claudePermissionDenied(_ result: JSONValue) throws {
+  try #require(result.objectValue?["isError"] == .bool(true), "\(result)")
+  let error = try #require(
+    result.objectValue?["structuredContent"]?.objectValue?["error"]?.objectValue)
+  try #require(
+    [JSONValue.string("permission.required"), .string("permission.denied")].contains(
+      error["code"] ?? .null), "\(result)")
+}
+
+private func claudeDenied(_ operation: @autoclosure () async throws -> JSONValue) async throws {
+  let result = try await operation()
+  try #require(
+    !String(describing: result).contains("permission.catalog_required"),
+    "A missing catalog is not denial coverage: \(result)")
+  let outer = result.objectValue
+  let nested = outer?["structuredContent"]?.objectValue?["result"]?.objectValue
+  try #require(outer?["isError"] == .bool(true) || nested?["isError"] == .bool(true), "\(result)")
+}
+
+private func withClaudeHarness(
+  _ package: PluginPackage, caller: String = "write", provider: String = "write", use: Bool = true,
+  skills: Bool = true, operation: (ClaudeHarness) async throws -> Void
+) async throws {
+  let h = try await ClaudeHarness.make(
+    package, caller: caller, provider: provider, use: use, skills: skills)
+  do { try await operation(h) } catch {
+    await h.diagnoseFailure()
+    do { try await h.close() } catch {
+      Issue.record("Claude fixture cleanup failed; retain root \(h.base.root): \(error)")
+    }
+    throw error
+  }
+  try await h.close()
+}
+
+private final class ClaudeHarness: @unchecked Sendable {
+  let base: FixedHostFixture
+  let lifecycle: GatewayStandaloneGenerations
+  let gateway: GatewayRuntime
+  let owner: GatewayPermissionOwner
+  let consumerID: GatewayProfileID
+  let worktree: URL
+  let projects: [String]
+  let paths: [URL]
+  let outside: [URL]
+  var removed = Set<String>()
+  var lastMCPResponse: JSONValue?
+
+  init(
+    base: FixedHostFixture, lifecycle: GatewayStandaloneGenerations, gateway: GatewayRuntime,
+    owner: GatewayPermissionOwner, consumerID: GatewayProfileID, projects: [String], paths: [URL],
+    outside: [URL]
+  ) {
+    self.base = base
+    self.lifecycle = lifecycle
+    self.gateway = gateway
+    self.owner = owner
+    self.consumerID = consumerID
+    self.projects = projects
+    self.paths = paths
+    self.worktree = paths[0]
+    self.outside = outside
+  }
+
+  static func make(
+    _ package: PluginPackage, caller: String, provider: String, use: Bool, skills: Bool
+  ) async throws -> ClaudeHarness {
+    let base = try FixedHostFixture(fullAccess: false, lifecycle: true)
+    let lifecycle = GatewayStandaloneGenerations(base.runtime)
+    print("Claude source fixture root: \(base.root.path)")
+    var projects: [String] = []
+    var paths: [URL] = []
+    var pending: GatewayRuntime?
+    do {
+      try await base.initializeRepository()
+      for name in ["claude", "sibling"] {
+        let result = try claudePayload(
+          await lifecycle.callToolForMCPAsync(
+            name: "git.worktree_add", arguments: .object(["name": .string(name)]),
+            context: .init(session: base.session)))
+        projects.append(try #require(result["project_id"]?.stringValue))
+        paths.append(URL(fileURLWithPath: try #require(result["path"]?.stringValue)))
+      }
+      let foreign = try base.database.prepareProviderContainer(.package("foreign")).sandbox
+      let outside = [
+        base.project.appendingPathComponent("sentinel"),
+        paths[1].appendingPathComponent("sentinel"),
+        base.root.appendingPathComponent("host-secret"),
+        URL(fileURLWithPath: foreign.state.value).appendingPathComponent("sentinel"),
+      ]
+      for path in outside { try Data("sentinel".utf8).write(to: path) }
+      try JSONSerialization.data(withJSONObject: outside.map(\.path)).write(
+        to: paths[0].appendingPathComponent("outside.json"))
+      let python = try #require(ProcessInfo.processInfo.environment["COMPUTER_MCP_CLAUDE_PYTHON"])
+      let peer = base.root.appendingPathComponent("claude-peer")
+      let fixture = try String(
+        contentsOf: package.root.appendingPathComponent("tests/Fixtures/host_vendor.py"),
+        encoding: .utf8)
+      let source = fixture.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
+        .joined(separator: "\n")
+      try ("#!" + python + "\n" + source).write(to: peer, atomically: true, encoding: .utf8)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: peer.path)
+      let store = PluginStore(database: base.database, platform: base.platform)
+      let runtime = base.runtime.permissionRuntime
+      let baselinePermissions = try runtime.store.readWithDatabase { _, ledger in
+        ledger.permissions(for: .plugin(.package("claude")))
+      }
+      let environment = ProcessInfo.processInfo.environment
+      let state: PluginStoreSnapshot
+      let origin: PluginSource
+      if let archive = environment["COMPUTER_MCP_CLAUDE_ARCHIVE"] {
+        let digest = try #require(environment["COMPUTER_MCP_CLAUDE_ARCHIVE_SHA256"])
+        let installed = try await store.installArchive(
+          at: URL(fileURLWithPath: archive), expectedSHA256: digest,
+          pluginID: package.manifest.id, version: package.manifest.version,
+          hostVersion: PluginVersion(ComputerMCPCLI.version), architecture: PluginHost.architecture,
+          storageRoot: base.root.appendingPathComponent("plugins"),
+          workerExecutable: nativeGatewayTestExecutable(),
+          expectedRevision: store.snapshot().revision)
+        try #require(installed.issues.isEmpty)
+        state = installed.snapshot
+        let selected = try #require(state.selectedInstallations["claude"])
+        origin = try #require(state.installations.first { $0.id == selected }).source
+        try #require(origin.kind == .artifact && origin.artifactSHA256 == digest)
+      } else {
+        state = try await store.registerDevelopment(
+          at: package.root, expectedRevision: store.snapshot().revision)
+        origin = .init(kind: .development, root: package.root)
+      }
+      let runtimePackage = try PluginPackage.load(at: origin.root)
+      let files = try #require(runtimePackage.manifest.mcp.first?.vendorExecution?.files)
+      for path in [PluginManifest.filename] + files.keys.sorted() {
+        try #require(
+          try Data(contentsOf: origin.root.appendingPathComponent(path))
+            == Data(contentsOf: package.root.appendingPathComponent(path)))
+      }
+      var settings = try #require(state.settings["claude"])
+      try #require(!settings.enabled)
+      let disabled = try PluginResolver.resolve(
+        package: runtimePackage, source: origin, settings: settings,
+        hostVersion: PluginVersion(ComputerMCPCLI.version), architecture: PluginHost.architecture)
+      try #require(
+        disabled.cliCommands.isEmpty && disabled.mcpServers.isEmpty && disabled.skillRoots.isEmpty)
+      let review = try GatewayProviderReview(
+        package: runtimePackage, configuration: base.database.configurationState())
+      #expect(throws: (any Error).self) {
+        try runtime.service.authorizeProviderExecution(
+          review: review, registrationID: "claude-stream", caller: nil, retryIDs: [])
+      }
+      try runtime.store.readWithDatabase { _, ledger in
+        let registeredPermissions = ledger.permissions(for: .plugin(.package("claude")))
+        try #require(registeredPermissions.entries == baselinePermissions.entries)
+        try #require(registeredPermissions.state(for: .project("fixture")) == .notGranted)
+        for (permission, state) in registeredPermissions.entries
+        where permission != .skills && permission != .machineInformation {
+          try #require(state == .notGranted)
+        }
+      }
+      try #require(!FileManager.default.fileExists(atPath: paths[0].path + "/native-calls.jsonl"))
+
+      settings.dependencyExecutables = ["claude-code": peer.path, "python-runtime": python]
+      settings.cli["claude"] = .init(registrationID: "claude-cli")
+      settings.mcp["stream"] = .init(
+        registrationID: "claude-stream", exposure: .reexport, prefix: "", allowAnyTool: true,
+        toolRisks: [
+          "claude.run.list": .readOnly, "claude.run.result": .readOnly,
+          "claude.run.events": .readOnly,
+        ])
+      settings.skills["claude-code"] = .init(registrationID: "claude-skills")
+      _ = try await store.setSettings(
+        settings, for: "claude", expectedRevision: store.snapshot().revision)
+      func permissions(_ access: String, use: Bool, skills: Bool) -> Permissions {
+        var values: [Permission: PermissionState] = [.machineInformation: .granted(.access)]
+        if access != "none" {
+          values[.project("fixture")] = .granted(access == "write" ? .write : .read)
+        }
+        if use { values[.plugin("claude")] = .granted(.use) }
+        if skills { values[.skills] = .granted(.access) }
+        return fixturePermissions(values)
+      }
+      try fixtureApprovePlugin(
+        runtimePackage, database: base.database, runtime: base.runtime.permissionRuntime,
+        permissions: permissions(provider, use: false, skills: false))
+      let enabledState = try await store.snapshot()
+      let plugin = try PluginResolver.resolve(
+        package: runtimePackage, source: origin,
+        settings: try #require(enabledState.settings["claude"]),
+        dependencyExecutables: [
+          "claude-code": peer, "python-runtime": URL(fileURLWithPath: python),
+        ], hostVersion: PluginVersion(ComputerMCPCLI.version), architecture: PluginHost.architecture
+      )
+      try #require(
+        plugin.diagnostics.isEmpty && plugin.cliCommands.count == 1 && plugin.mcpServers.count == 1
+          && plugin.skillRoots.count == 1)
+      let riskConfiguration = GatewayConfiguration(mcp: .init(servers: plugin.mcpServers))
+      let reviewed = try PluginContributionRequirements(
+        sourceDigest: PluginStore.manifestDigest(package.manifest),
+        declarations: .init(package.manifest), componentID: "stream")
+      let server = try #require(plugin.mcpServers.first)
+      let overrides = try #require(reviewed.contribution).toolRequirements
+      try #require(Set(server.toolRisks.keys) == Set(overrides.keys))
+      for name in overrides.keys {
+        try #require(reviewed.requirements(for: name)?.project == .read)
+        try #require(
+          riskConfiguration.mcpRisk(for: .init(serverID: "claude-stream", toolName: name))
+            == .readOnly)
+      }
+      for name in [
+        "claude.run", "claude.run.start", "claude.run.cancel", "claude.run.release",
+        "fixture.unlisted",
+      ] {
+        try #require(reviewed.requirements(for: name)?.project == .write)
+        try #require(
+          riskConfiguration.mcpRisk(for: .init(serverID: "claude-stream", toolName: name))
+            == .externalWrite)
+      }
+      let consumerID = try #require(GatewayProfileID(rawValue: "claude-consumer"))
+      let admin = try #require(
+        base.database.profiles().first { $0.id == base.configuration.runtime.profileID })
+      try #require(consumerID != .localAdmin && consumerID != admin.id)
+      var callerPermissions = permissions(caller, use: use, skills: skills)
+      // Explicit denial is representable in profile configuration and overrides initial Skills access.
+      if !skills { try callerPermissions.set(.denied, for: .skills) }
+      let consumer = ProfileGrant(
+        id: consumerID, permissions: callerPermissions,
+        allowedCallers: [.localMCP])
+      try base.database.saveProfile(consumer)
+      let gateway = try GatewayRuntime(
+        configuration: .init(
+          runtime: .init(caller: .localMCP, profileID: consumerID),
+          profiles: base.configuration.profiles + [.init(grant: consumer)],
+          skills: .init(enabled: true)),
+        context: .init(
+          caller: .localMCP, profileID: consumerID, projectID: projects[0],
+          trustedPrincipalID: "claude-consumer"), database: base.database,
+        registeredProjects: base.database.projects(), platform: base.platform, plugins: [plugin],
+        bundledPlugins: .init(packages: [], issues: []))
+      pending = gateway
+      _ = try gateway.makeControlSession()
+      let storedConsumer = try #require(base.database.profiles().first { $0.id == consumerID })
+      try #require(
+        storedConsumer.permissions.state(for: .skills) == (skills ? .granted(.access) : .denied)
+      )
+      try #require(base.database.profiles().first { $0.id == admin.id } == admin)
+      let owner = try GatewayPermissionOwner(
+        context: .init(
+          caller: .localApp, profileID: .localAdmin, trustedPrincipalID: "claude-fixture-owner"),
+        validate: {})
+      let approval = try #require(
+        gateway.permissionRuntime.service.view(owner: owner).providers.first {
+          $0.identity == .package("claude")
+        })
+      try #require(approval.enabled && approval.fullAccessConsent == nil)
+      let harness = ClaudeHarness(
+        base: base, lifecycle: lifecycle, gateway: gateway, owner: owner, consumerID: consumerID,
+        projects: projects, paths: paths, outside: outside)
+      if use { try await harness.requireCatalog() }
+      try #require(harness.callCount == 0)
+      return harness
+    } catch {
+      await pending?.shutdown()
+      do {
+        try await cleanupClaude(base, lifecycle: lifecycle, projects: projects, paths: paths)
+      } catch { Issue.record("Claude setup cleanup failed; retain \(base.root): \(error)") }
+      throw error
+    }
+  }
+
+  var callCount: Int {
+    (try? String(contentsOf: worktree.appendingPathComponent("native-calls.jsonl"), encoding: .utf8)
+      .split(separator: "\n").count) ?? 0
+  }
+
+  func catalog() async throws -> JSONValue {
+    try await gateway.callToolForMCPAsync(
+      name: "mcp.tools.list", arguments: .object(["server": .string("claude-stream")]),
+      context: .empty)
+  }
+
+  func requireCatalog() async throws {
+    let response = try await catalog()
+    try #require(response.objectValue?["isError"] != .bool(true), "\(response)")
+    let tools = try #require(
+      response.objectValue?["structuredContent"]?.objectValue?["result"]?.arrayValue)
+    let names = tools.compactMap { $0.objectValue?["name"]?.stringValue }
+    try #require(names.count == 7)
+    for tool in tools {
+      let name = try #require(tool.objectValue?["name"]?.stringValue)
+      let inspection = ["claude.run.list", "claude.run.result", "claude.run.events"].contains(name)
+      try #require(
+        tool.objectValue?["annotations"]?.objectValue?["readOnlyHint"] == .bool(inspection))
+      if inspection {
+        try #require(
+          tool.objectValue?["_meta"]?.objectValue?["io.github.computer-mcp/risk"]
+            == .string("read-only"))
+      }
+    }
+    try #require(
+      Set(names) == [
+        "claude.run", "claude.run.start", "claude.run.list", "claude.run.result",
+        "claude.run.events", "claude.run.cancel", "claude.run.release",
+      ])
+  }
+
+  func mcp(_ name: String, _ arguments: [String: JSONValue] = [:]) async throws -> JSONValue {
+    let response = try await gateway.callToolForMCPAsync(
+      name: "mcp.tools.call",
+      arguments: .object([
+        "server": .string("claude-stream"), "tool": .string(name), "arguments": .object(arguments),
+      ]), context: .empty)
+    lastMCPResponse = response
+    return response
+  }
+
+  func diagnoseFailure() async {
+    func log(_ label: String, _ value: String) {
+      print("Claude failure diagnostic \(label): \(String(value.prefix(16384)))")
+    }
+    if let lastMCPResponse { log("last MCP response", String(describing: lastMCPResponse)) }
+    for name in ["native-calls.jsonl"] {
+      do {
+        let file = try FileHandle(forReadingFrom: worktree.appendingPathComponent(name))
+        defer { try? file.close() }
+        let data = try file.read(upToCount: 16384) ?? Data()
+        log(name, String(decoding: data, as: UTF8.self))
+      } catch { log(name, String(describing: error)) }
+    }
+    do {
+      let status = try await gateway.callToolForMCPAsync(
+        name: "mcp.servers.status", arguments: .object(["server": .string("claude-stream")]),
+        context: .empty)
+      log("provider status", String(describing: status))
+    } catch { log("provider status error", String(describing: error)) }
+  }
+
+  func cli(_ prompt: String) async throws -> JSONValue {
+    let tool = try #require(
+      gateway.listTools(context: .empty).first {
+        $0.meta?.objectValue?["cli"]?.objectValue?["registration"] == .string("claude-cli")
+          && $0.meta?.objectValue?["cli"]?.objectValue?["command"] == .string("print")
+      })
+    return try await gateway.callToolForMCPAsync(
+      name: tool.name,
+      arguments: .object(["prompt": .string(prompt), "permission_mode": .string("dontAsk")]),
+      context: .empty)
+  }
+
+  func skill() async throws -> JSONValue {
+    try await gateway.callToolForMCPAsync(
+      name: "skills.read",
+      arguments: .object(["name": .string("claude-code"), "root_id": .string("claude-skills")]),
+      context: .empty)
+  }
+
+  func waitReady(_ marker: String = "native-ready") async throws {
+    for _ in 0..<500 {
+      if FileManager.default.fileExists(atPath: worktree.appendingPathComponent(marker).path) {
+        return
+      }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    throw ClaudeConsumerError.checkpoint
+  }
+
+  func waitJoined() async throws {
+    for _ in 0..<500 {
+      try await gateway.permissionRuntime.coordinator.reconcile()
+      var live = false
+      for ownership in base.observations.ownerships {
+        if try await !ownership.members().isEmpty { live = true }
+      }
+      if !live { return }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    throw ClaudeConsumerError.cleanup
+  }
+
+  func settled(_ id: String) async throws -> [String: JSONValue] {
+    for _ in 0..<200 {
+      let result = try await mcp("claude.run.result", ["run_id": .string(id)])
+      let value = try #require(claudeMCPResult(result))
+      if value["completed"] == .bool(true) { return value }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    throw ClaudeConsumerError.checkpoint
+  }
+
+  func cancelRetained() async throws {
+    let id = try #require(
+      try claudePayload(await mcp("claude.run.start", ["prompt": .string("hold")]))["run_id"]?
+        .stringValue)
+    try await waitReady()
+    try await claudeDenied(await mcp("claude.run.release", ["run_id": .string(id)]))
+    _ = try claudePayload(await mcp("claude.run.cancel", ["run_id": .string(id)]))
+    var settled: [String: JSONValue] = [:]
+    for _ in 0..<500 {
+      // A cancelled run is intentionally a downstream tool error with retained data.
+      let response = try await mcp("claude.run.result", ["run_id": .string(id)])
+      settled =
+        response.objectValue?["structuredContent"]?.objectValue?["result"]?.objectValue?[
+          "structuredContent"]?.objectValue?["result"]?.objectValue ?? [:]
+      if settled["completed"] == .bool(true) { break }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    try #require(
+      settled["cleanup_confirmed"] == .bool(true) && settled["state"] == .string("cancelled"))
+    let listing = try claudePayload(await mcp("claude.run.list"))
+    try #require(listing["runs"]?.arrayValue?.count == 1)
+    _ = try claudePayload(await mcp("claude.run.release", ["run_id": .string(id)]))
+    try #require(
+      try claudePayload(await mcp("claude.run.list"))["runs"]?.arrayValue?.isEmpty == true)
+  }
+
+  func removeSelected() async throws {
+    _ = try claudePayload(
+      await lifecycle.callToolForMCPAsync(
+        name: "git.worktree_remove",
+        arguments: .object(["project_id": .string(projects[0]), "force": .bool(true)]),
+        context: .init(session: base.session)))
+    removed.insert(projects[0])
+  }
+
+  func close() async throws {
+    await gateway.shutdown()
+    try await cleanupClaude(
+      base, lifecycle: lifecycle, projects: projects.filter { !removed.contains($0) }, paths: paths)
+  }
+}
+
+private enum ClaudeConsumerError: Error { case checkpoint, cleanup }
+
+private func cleanupClaude(
+  _ base: FixedHostFixture, lifecycle: GatewayStandaloneGenerations, projects: [String],
+  paths: [URL]
+) async throws {
+  for ownership in base.observations.ownerships {
+    try #require(try await ownership.members().isEmpty)
+  }
+  for project in projects.reversed() {
+    _ = try claudePayload(
+      await lifecycle.callToolForMCPAsync(
+        name: "git.worktree_remove",
+        arguments: .object(["project_id": .string(project), "force": .bool(true)]),
+        context: .init(session: base.session)))
+  }
+  for path in paths { try #require(!FileManager.default.fileExists(atPath: path.path)) }
+  try await base.requireNoScratch()
+  await lifecycle.shutdown()
+  base.session.end()
+  await base.runtime.shutdown()
+  for ownership in base.observations.ownerships {
+    try #require(try await ownership.members().isEmpty)
+  }
+  try FileManager.default.removeItem(at: base.root)
+  try #require(!FileManager.default.fileExists(atPath: base.root.path))
+}

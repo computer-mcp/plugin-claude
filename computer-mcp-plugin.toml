@@ -17,6 +17,11 @@ commands = ["python3"]
 instructions = "Provide Python 3.13 or newer on the Computer MCP launch PATH. The plugin does not install Python."
 documentation = "https://www.python.org/downloads/"
 
+[[permissions]]
+id = "project"
+access = "write"
+purpose = "Run requested Claude Code tasks and edits in owner-selected project worktrees, and manage the executions this adapter owns."
+
 [[cli]]
 id = "claude"
 executable = { dependency = "claude-code" }
@@ -26,9 +31,16 @@ tree = { kind = "file", path = "cli-tree.json" }
 [[mcp]]
 id = "stream"
 transport = "stdio"
-executable = { path = "bin/claude-mcp-adapter" }
+executable = { path = "bin/claude-mcp-managed" }
 prefix = "claude"
 capabilities = ["tools", "resources"]
+requirements = { project = "write" }
+tool_requirements = { "claude.run.list" = { project = "read" }, "claude.run.result" = { project = "read" }, "claude.run.events" = { project = "read" } }
+
+[mcp.vendor_execution]
+dependency = "claude-code"
+signature = "claude-vendor-execution.json"
+files = { "claude-vendor-execution.json" = "482dfdae2e428e8996b31ab653862e4849c8ecd2b73bebe35bf866df3c1f19ec", "bin/claude-mcp-managed" = "c29bd8150ae1ce56d7e7cca42ebf331816c27a95ab966b20d663e53d6e9a8f79", "bin/claude-mcp-adapter" = "5fa543bd8f81261e0dc0d96b2c0aa2771c909d7b04de3db2fe8e22238487c20b", "bin/claude_vendor_execution.py" = "80629b03517f7291556a35d584ebdce13e90911fee82ef204b6b2db64e83225f", "bin/plugin_runtime.py" = "5a9f797bfca4b6ab31a9a648017fb1d09400593a9aab0d2250d426efa51f97cf", "cli-tree.json" = "828d7fddab1c712e08931c6edaff1e937a8598f626f73b1db2afd4d0956dd877" }
 
 [[skills]]
 id = "claude-code"

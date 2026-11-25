@@ -28,14 +28,13 @@
 
 An independent [Computer MCP](https://computer-mcp.github.io/) plugin for Claude Code. One
 package contributes a canonical CLI tree, a stdio MCP adapter that streams runs, and
-client-neutral usage skills. It does not link Computer MCP Core, and adding vendor behavior needs
-no host release.
+client-neutral usage skills. The Python adapter uses the Host vendor execution channel for installed runs.
 
 The CLI contribution describes verified non-interactive commands; the native baseline and its
 exact version assertion live in `cli-tree.json`. It is deliberately partial: interactive setup,
 installation and unsupported administrative flows are not callable tools. The adapter owns
-streaming and session and run state. The host owns registration, profile grants, the initial
-working directory and audit.
+streaming and session and run state. The Host owns registration, profile grants, working directory, vendor child execution
+and audit.
 
 ## Quick look
 
@@ -62,9 +61,9 @@ from `Examples/settings.json`.
 3. Install the ZIP through Computer MCP's plugin UI or the owner CLI. Installation is neither
    activation nor a permission grant.
 4. Review `Examples/settings.json`, replace its placeholder paths, and configure the plugin
-   through the same UI or `plugins configure`. The CLI dependency binding selects the executable
-   for the CLI contribution; the MCP launch `args` supply `--executable` for the adapter. Point
-   both at the same verified installation.
+   through the same UI or `plugins configure`. The `claude-code` dependency binding selects
+   the executable for both contributions. The installed MCP entry point requires Host negotiation.
+   Direct standalone MCP clients can use `bin/claude-mcp-adapter` with `--executable`.
 
 See the [installation guide](docs/Reference/Installation.md) for revisions, configuration
 publication and validation.
@@ -72,8 +71,8 @@ publication and validation.
 ## Usage
 
 The adapter consumes Claude Code's print-mode stream-json, including partial messages, and keeps
-the final result, the native session ID and an explicit error status. Discovery does not launch
-Claude Code. Release discards a completed result only after cleanup is confirmed; cleanup
+the final result, the native session ID and the native exit outcome independently of cleanup
+confirmation. Discovery does not launch Claude Code. Release discards a completed result only after cleanup is confirmed; cleanup
 uncertainty stays owned and cannot be released or evicted. The work resource reports each active
 run and retained result with its original acquisition reference, so hosts can account for work
 after the creating tool returns, without private Host Services permission.
@@ -84,14 +83,14 @@ permission responses, and existing vendor configuration continues to apply. Choo
 continue or start a session is explicit, and cancelling a run does not delete its saved native
 conversation.
 
-The working directory is not an operating-system sandbox. Vendor configuration, credentials and
-tools keep their own authority; host authorization does not silently approve vendor actions. See
+Installed runs use the Host-selected project and sandbox. The standalone adapter uses
+the caller's process environment. Native vendor permissions and credentials still apply. See
 the [interface contract](docs/Reference/Interface.md) for retention, cancellation and error
 semantics.
 
 ## Requirements
 
-- Computer MCP on an arm64 computer.
+- Computer MCP with managed print execution support on an arm64 computer.
 - Claude Code, installed and authenticated separately; its version must match `cli-tree.json`.
 - Python 3.13 or newer.
 
@@ -105,8 +104,17 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 scripts/validate_native.py --executable /absolute/path/to/claude
 ```
 
-Tests use deterministic peers, not a model. Authenticated execution and production activation are
-separate acceptance steps.
+Tests use deterministic peers. The source consumer in `scripts/validate_host.py`
+takes explicit clean host/plugin paths and full commit SHAs and stages isolated
+snapshots; see the installation guide. The manifest requests provider Project
+write, with MCP caller read overrides for list/result/events. CLI still requires
+Project write; Skills requires caller Skills and Plugin use. Host approval does
+not grant native vendor approval.
+
+The offline sandbox declaration has network none and no config-read exception.
+Native config/login/network requirements and the owner runtime-mode choice remain
+pending, as do matched-host runtime and signed-App acceptance. Authenticated
+execution and production activation are separate acceptance steps.
 
 ## Contributing
 

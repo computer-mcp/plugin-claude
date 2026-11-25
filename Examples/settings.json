@@ -6,11 +6,6 @@
   "mcp": {
     "stream": {
       "enabled": true,
-      "hostServices": false,
-      "args": [
-        "--executable",
-        "/absolute/path/to/claude"
-      ],
       "exposure": "reexport",
       "prefix": "",
       "allowAnyTool": true
