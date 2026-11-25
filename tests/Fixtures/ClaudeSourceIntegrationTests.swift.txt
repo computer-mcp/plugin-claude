@@ -186,12 +186,17 @@ struct ClaudeSourceIntegrationTests {
         try #require(denied == sentinel.deniedOperations, "\(sentinel.path.path)")
       }
       let locations = try #require(observed["locations"] as? [String: String])
+      try h.recordScratch(locations)
       let container = try h.base.database.prepareProviderContainer(.package("claude")).sandbox
       try #require(locations["HOME"] == container.home.value)
       try #require(locations["XDG_CACHE_HOME"] == container.cache.value)
       try #require(locations["XDG_STATE_HOME"] == container.state.value)
       let second = try claudePayload(await h.mcp("claude.run", ["prompt": .string("boundaries")]))
       try #require(second["cleanup_confirmed"] == .bool(true))
+      let secondText = try #require(second["result"]?.stringValue)
+      let secondObserved = try #require(
+        JSONSerialization.jsonObject(with: Data(secondText.utf8)) as? [String: Any])
+      try h.recordScratch(try #require(secondObserved["locations"] as? [String: String]))
       for directory in [container.home.value, container.cache.value, container.state.value] {
         try #require(
           try String(contentsOfFile: directory + "/claude-consumer-marker", encoding: .utf8) == "xx"
@@ -203,9 +208,6 @@ struct ClaudeSourceIntegrationTests {
       try #require(
         try String(contentsOf: h.worktree.appendingPathComponent("selected-write"), encoding: .utf8)
           == "worktree")
-      try #require(
-        !FileManager.default.fileExists(
-          atPath: try #require(locations["TMPDIR"]) + "/claude-consumer-marker"))
       let listing = try claudePayload(await h.mcp("claude.run.list"))
       for run in try #require(listing["runs"]?.arrayValue) {
         let id = try #require(run.objectValue?["run_id"]?.stringValue)
@@ -357,6 +359,7 @@ private final class ClaudeHarness: @unchecked Sendable {
   let projects: [String]
   let paths: [URL]
   let outside: [ClaudeBoundarySentinel]
+  private var reportedScratch: [URL] = []
   var removed = Set<String>()
   var lastMCPResponse: JSONValue?
 
@@ -743,8 +746,25 @@ private final class ClaudeHarness: @unchecked Sendable {
     removed.insert(projects[0])
   }
 
+  func recordScratch(_ locations: [String: String]) throws {
+    let path = URL(fileURLWithPath: try #require(locations["TMPDIR"]), isDirectory: true)
+    try #require(
+      path.deletingLastPathComponent().path == base.database.permissionExecutionRoot.path)
+    try #require(UUID(uuidString: path.lastPathComponent) != nil)
+    try #require(!reportedScratch.contains(path), "Reused execution scratch: \(path.path)")
+    reportedScratch.append(path)
+  }
+
   func close() async throws {
-    await gateway.shutdown()
+    // The first invocation can also own the pooled adapter process. Its native
+    // child receipt does not close the execution that owns the scratch directory.
+    await consumerRouter.shutdown()
+    if !reportedScratch.isEmpty {
+      try await base.requireNoScratch()
+      for path in reportedScratch {
+        try #require(!FileManager.default.fileExists(atPath: path.path), "\(path.path)")
+      }
+    }
     try await cleanupClaude(
       base, lifecycle: lifecycle, projects: projects.filter { !removed.contains($0) }, paths: paths)
   }
