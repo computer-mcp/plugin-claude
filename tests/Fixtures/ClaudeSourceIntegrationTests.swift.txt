@@ -1,5 +1,6 @@
 import ComputerMCPMacOS
 import ComputerMCPPermissions
+import ComputerMCPSandbox
 import ComputerMCPTestSupport
 import Foundation
 import Testing
@@ -236,10 +237,8 @@ struct ClaudeSourceIntegrationTests {
 
   @Test func sourceCallerRevocation() async throws {
     try await withClaudeHarness(sourceClaudePackage()) { h in
-      let id = try #require(
-        try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))["run_id"]?
-          .stringValue)
-      try await h.waitReady()
+      let workload = try await h.startHeldWorkload()
+      let handle: [String: JSONValue] = ["run_id": .string(workload.runID)]
       let service = h.gateway.permissionRuntime.service
       let unrelated = try #require(GatewayProfileID(rawValue: "claude-unrelated"))
       try h.base.database.saveProfile(
@@ -250,15 +249,15 @@ struct ClaudeSourceIntegrationTests {
         .plugin("claude"), profileID: unrelated, owner: h.owner,
         expectedRevision: service.view(owner: h.owner).revision)
       try await h.gateway.permissionRuntime.coordinator.reconcile()
+      try #require(try await workload.ownership.members().contains(workload.root))
       try #require(
-        try claudePayload(await h.mcp("claude.run.result", ["run_id": .string(id)]))["completed"]
-          == .bool(false))
+        try claudePayload(await h.mcp("claude.run.result", handle))["completed"] == .bool(false))
       _ = try service.revokePermission(
         .plugin("claude"), profileID: h.consumerID, owner: h.owner,
         expectedRevision: service.view(owner: h.owner).revision)
       try await h.gateway.permissionRuntime.coordinator.reconcile()
-      try await claudeDenied(await h.mcp("claude.run.result", ["run_id": .string(id)]))
-      try await h.waitJoined()
+      try await claudeDenied(await h.mcp("claude.run.result", handle))
+      try await h.waitForWorkloadExit(workload)
     }
     try sourceClaudeEvidence("sourceCallerRevocation", ["scoped-revocation"])
   }
@@ -284,10 +283,9 @@ struct ClaudeSourceIntegrationTests {
 
   @Test func sourceHostRemoval() async throws {
     try await withClaudeHarness(sourceClaudePackage()) { h in
-      _ = try claudePayload(await h.mcp("claude.run.start", ["prompt": .string("hold")]))
-      try await h.waitReady()
+      let workload = try await h.startHeldWorkload()
       try await h.removeSelected()
-      try await h.waitJoined()
+      try await h.requireWorkloadExit(workload)
       try #require(!FileManager.default.fileExists(atPath: h.worktree.path))
     }
     try sourceClaudeEvidence("sourceHostRemoval", ["host-removal", "cleanup"])
@@ -364,6 +362,13 @@ private struct ClaudeBoundarySentinel {
   let deniedOperations: [String]
 }
 
+private struct ClaudeHeldWorkload {
+  let runID: String
+  let connectionID: String?
+  let root: ExecutionMember
+  let ownership: any ExecutionOwnership
+}
+
 private final class ClaudeHarness: @unchecked Sendable {
   let base: FixedHostFixture
   let lifecycle: GatewayStandaloneGenerations
@@ -376,6 +381,7 @@ private final class ClaudeHarness: @unchecked Sendable {
   let paths: [URL]
   let outside: [ClaudeBoundarySentinel]
   private var reportedScratch: [URL] = []
+  private var catalogMembers: Set<ExecutionMember> = []
   var removed = Set<String>()
   var lastMCPResponse: JSONValue?
 
@@ -620,6 +626,7 @@ private final class ClaudeHarness: @unchecked Sendable {
   }
 
   func requireCatalog() async throws {
+    let existing = Set(base.observations.members)
     let response = try await catalog()
     try #require(response.objectValue?["isError"] != .bool(true), "\(response)")
     let tools = try #require(
@@ -642,6 +649,7 @@ private final class ClaudeHarness: @unchecked Sendable {
         "claude.run", "claude.run.start", "claude.run.list", "claude.run.result",
         "claude.run.events", "claude.run.cancel", "claude.run.release",
       ])
+    catalogMembers = Set(base.observations.members).subtracting(existing)
   }
 
   func mcp(
@@ -712,6 +720,58 @@ private final class ClaudeHarness: @unchecked Sendable {
     throw ClaudeConsumerError.checkpoint
   }
 
+  func startHeldWorkload() async throws -> ClaudeHeldWorkload {
+    let run = try claudePayload(await mcp("claude.run.start", ["prompt": .string("hold")]))
+    let id = try #require(run["run_id"]?.stringValue)
+    try await waitReady()
+    let marker = worktree.appendingPathComponent("native-ready")
+    let pid = try #require(Int32(String(contentsOf: marker, encoding: .utf8)))
+    let owners = base.observations.ownerships.filter {
+      (try? $0.recoveryState().root.processID) == pid
+    }
+    try #require(owners.count == 1, "Expected one Host owner for native workload PID \(pid)")
+    let ownership = try #require(owners.first)
+    let root = try ownership.recoveryState().root
+    try #require(try await ownership.members().contains(root))
+    let connection = try await retainedRun(id)?["connection_id"]?.stringValue
+    return .init(runID: id, connectionID: connection, root: root, ownership: ownership)
+  }
+
+  func waitForWorkloadExit(_ workload: ClaudeHeldWorkload) async throws {
+    for _ in 0..<500 {
+      try await gateway.permissionRuntime.coordinator.reconcile()
+      if try await workload.ownership.members().isEmpty { break }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    try await requireWorkloadExit(workload)
+  }
+
+  func requireWorkloadExit(_ workload: ClaudeHeldWorkload) async throws {
+    let scope = "run=\(workload.runID) caller=\(consumerID.rawValue) project=\(projects[0])"
+    let location = "worktree=\(worktree.path) connection=\(workload.connectionID ?? "unobserved")"
+    let identity = "pid=\(workload.root.processID) identity=\(workload.root.identity)"
+    let remaining = try await workload.ownership.members()
+    guard remaining.isEmpty else {
+      throw ClaudeConsumerError.workloadCleanup(
+        "\(scope) \(location) \(identity) remaining=\(remaining)")
+    }
+    var liveCatalog: [Int32] = []
+    var liveOther: [Int32] = []
+    for ownership in base.observations.ownerships {
+      if let root = try? ownership.recoveryState().root,
+        let members = try? await ownership.members(), !members.isEmpty
+      {
+        if catalogMembers.contains(root) {
+          liveCatalog.append(root.processID)
+        } else {
+          liveOther.append(root.processID)
+        }
+      }
+    }
+    print("Claude workload joined: \(scope) \(location) \(identity)")
+    print("Claude live owner roots at join: catalog=\(liveCatalog) other=\(liveOther)")
+  }
+
   func waitJoined() async throws {
     for _ in 0..<500 {
       try await gateway.permissionRuntime.coordinator.reconcile()
@@ -754,7 +814,7 @@ private final class ClaudeHarness: @unchecked Sendable {
 
     // The handle-free list is local to its connection. Select the write carrier
     // explicitly so Host authorizes the read against the instance retaining this run.
-    let owner = try #require(try await retainedOwner(id))
+    let owner = try #require(try await retainedRun(id)?["owner"])
     let listing = try claudePayload(await mcp("claude.run.list", owner: owner))
     let runs = try #require(listing["runs"]?.arrayValue)
     try #require(runs.count == 1 && runs.first?.objectValue?["run_id"] == .string(id))
@@ -762,7 +822,7 @@ private final class ClaudeHarness: @unchecked Sendable {
     _ = try claudePayload(await mcp("claude.run.events", handle))
     try await releaseRun(id)
     for _ in 0..<40 {
-      if try await retainedOwner(id) == nil {
+      if try await retainedRun(id) == nil {
         let released = try await mcp("claude.run.result", handle)
         try #require(
           claudeMCPResult(released)?["error"]?.objectValue?["code"] == .string("unknown_run"))
@@ -779,20 +839,20 @@ private final class ClaudeHarness: @unchecked Sendable {
     try #require(result["run_id"] == .string(id) && result["released"] == .bool(true))
   }
 
-  private func retainedOwner(_ id: String) async throws -> JSONValue? {
+  private func retainedRun(_ id: String) async throws -> [String: JSONValue]? {
     let response = try await consumerRouter.callToolForMCPAsync(
       name: "runtime.owners.list",
       arguments: .object(["project_id": .string(projects[0]), "server": .string("claude-stream")]),
       context: .empty)
     let rows = try #require(try claudePayload(response)["owners"]?.arrayValue)
-    let matches = rows.compactMap { row -> JSONValue? in
+    let matches = rows.compactMap { row -> [String: JSONValue]? in
       guard let fields = row.objectValue, fields["kind"] == .string("mcpResource"),
         let encoded = fields["resource_id"]?.stringValue,
         let resource = try? JSONDecoder().decode(JSONValue.self, from: Data(encoded.utf8)),
         resource.objectValue?["kind"] == .string("claude.run"),
         resource.objectValue?["id"] == .string(id)
       else { return nil }
-      return fields["owner"]
+      return fields
     }
     try #require(matches.count <= 1)
     return matches.first
@@ -831,7 +891,10 @@ private final class ClaudeHarness: @unchecked Sendable {
   }
 }
 
-private enum ClaudeConsumerError: Error { case checkpoint, cleanup }
+private enum ClaudeConsumerError: Error {
+  case checkpoint, cleanup
+  case workloadCleanup(String)
+}
 
 private func cleanupClaude(
   _ base: FixedHostFixture, lifecycle: GatewayStandaloneGenerations, projects: [String],
