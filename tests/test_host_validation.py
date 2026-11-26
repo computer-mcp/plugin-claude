@@ -51,6 +51,39 @@ class SourceDriverTests(unittest.TestCase):
                     driver.validate_locations(host, plugin, output)
             driver.validate_locations(root/'h', root/'p', root/'o')
 
+    def test_output_overlap_uses_case_insensitive_filesystem_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            sources = root/'Sources'
+            host = sources/'Host'
+            plugin = sources/'Plugin'
+            host.mkdir(parents=True)
+            plugin.mkdir()
+            alias = root/'sources'
+            if not alias.is_dir():
+                self.skipTest('Temporary filesystem is case-sensitive')
+
+            driver.validate_locations(host, plugin, driver.absolute(str(alias/'evidence')))
+            for output in (alias/'host'/'new'/'evidence', alias/'plugin'/'evidence', alias):
+                with self.subTest(output=output):
+                    with self.assertRaisesRegex(ValueError, 'Output must be outside'):
+                        driver.validate_locations(host, plugin, driver.absolute(str(output)))
+            with self.assertRaisesRegex(ValueError, 'separate, non-nested'):
+                driver.validate_locations(host, alias/'host', root/'evidence')
+
+    def test_output_accepts_a_fresh_external_path_and_refuses_an_existing_one(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            host, plugin = root/'Host', root/'Plugin'
+            host.mkdir()
+            plugin.mkdir()
+            output = root/'runs'/'evidence'
+            driver.validate_locations(host, plugin, output)
+            self.assertFalse(output.parent.exists())
+            output.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, 'new external directory'):
+                driver.validate_locations(host, plugin, output)
+
     def test_export_refuses_links_traversal_and_preserves_modes(self):
         for name, kind in [('../escape', tarfile.REGTYPE), ('link', tarfile.SYMTYPE),
                            ('regular', tarfile.REGTYPE)]:
