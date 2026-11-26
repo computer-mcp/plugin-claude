@@ -30,17 +30,17 @@ CI runs deterministic fixture tests and packaging; it does not install a vendor 
 
 Run the deterministic companion against explicit clean source commits. Both
 inputs must be repository roots whose HEAD exactly matches the supplied lowercase
-40-character SHA, including no untracked changes. Output must be a new directory
-outside both inputs and their ancestors, in the integration owner's ignored
-`.agent/host6` evidence area. The driver stages snapshots and never edits either
-checkout:
+40-character SHA, including no untracked changes. Pass `--output` an absolute
+path for a new evidence directory. The path must be unused and must neither be
+inside nor contain either source checkout. The driver creates the directory and
+stages snapshots there without editing either checkout.
 
 ```sh
 python3 scripts/validate_host.py \
-  --host-source /absolute/path/to/host-source --host-sha <full-host-sha> \
-  --plugin-source /absolute/path/to/plugin-source --plugin-sha <full-plugin-sha> \
+  --host-source /absolute/path/to/host-source --host-sha '<full-host-sha>' \
+  --plugin-source /absolute/path/to/plugin-source --plugin-sha '<full-plugin-sha>' \
   --suite registered-print \
-  --output /absolute/path/to/owner/.agent/host6/claude-registered-print
+  --output /absolute/path/to/evidence/claude-registered-print
 ```
 
 This requires the matched host macOS test target and its existing isolated
