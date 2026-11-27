@@ -4,7 +4,7 @@
 
 The standalone process supervisor requires the macOS `os.waitid` interface exposed by Python 3.13+. Installed runs require a Computer MCP Host that supports managed print execution.
 
-Install and authenticate Claude Code separately. The native executable version must match `cli-tree.json`; its `executable_checks` are applied before CLI calls and before adapter execution. The package does not install/update a vendor, perform interactive login, or copy credentials.
+Install Claude Code 2.1.59 separately. The version assertion in `cli-tree.json` applies before CLI calls and adapter execution.
 
 Provide Python 3.13 or newer as `python3` on the environment PATH that launches Computer MCP. The packaged executable uses `#!/usr/bin/env python3`. A host dependency binding alone does not rewrite this interpreter lookup. A supported interpreter is required even when the vendor executable is explicitly bound.
 
@@ -13,6 +13,25 @@ Install the ZIP through Computer MCP's plugin UI or owner CLI. Installation is n
 The example exposes this plugin's complete MCP tool catalog with no extra prefix. It is a host choice, not authorization embedded in the package. Authorize the desired tools/registration and project in the calling profile. Obtain projected CLI and MCP names from the actual host `tools/list`, rather than constructing names. `plugins doctor` checks files and configuration; an MCP connection check verifies initialization/catalog, not model execution.
 
 Computer MCP publishes plugin configuration changes to connected clients atomically. New calls use the current configuration; existing work keeps its owning runtime until release. Installation does not grant access, and later calls use current authorization. Do not restart the active development control connection merely to test installation.
+
+## Claude Code sign-in
+
+Use the native `claude auth login` command to sign in. For standalone runs,
+use the account state of the shell that launches the adapter. For installed runs,
+sign-in must use the registered provider's isolated state. The Host supplies a
+persistent provider HOME, cache and state paths, plus per-execution scratch.
+An ordinary terminal login uses its own state, and the plugin exposes no login
+tool or credential import. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+
+In clean signed-out state, Claude Code 2.1.59 reports `loggedIn: false` and
+`authMethod: "none"` from `claude auth status` and exits with status `1`.
+Its print stream ends with a native result containing `is_error: true` and
+`Not logged in · Please run /login`, also with exit status `1`. The MCP
+result retains the final event and exit code.
+
+During enablement, review the requested Claude API and authentication hosts.
+The owner may narrow the list, and Host policy limits still apply. See the
+[sandbox contract](Interface.md#reviewed-declarations-and-caller-admission).
 
 ## Build
 
@@ -24,7 +43,10 @@ python3 scripts/build_package.py /new/output/directory
 
 The builder produces `claude.zip` and prints an ID/version/SHA-256 receipt. Identical source bytes produce identical archive bytes. It refuses to overwrite a different existing artifact. The archive contains the manifest, reviewed vendor signature and file digests, canonical CLI tree, adapters, Skills, examples, manuals and notices. README images are included at `.github/assets/logo/logo-light.png` and `.github/assets/logo/logo-dark.png`, preserving their relative links. These are the only packaged `.github` files. It excludes tests, build scripts, local evidence, caches and credentials. Only executable entrypoints receive executable mode.
 
-CI runs deterministic fixture tests and packaging; it does not install a vendor or invoke a model. Native validation checks the actual version/help and required flags only. ACP initialization without authentication is a separate non-model protocol probe for Cursor. Full authenticated prompt execution remains a separately authorized acceptance run because it can consume subscription/API usage and perform vendor actions.
+CI runs deterministic fixture tests and packaging. Native validation checks the
+installed version, help and required flags. Authenticated prompt execution can
+consume subscription or API usage and perform vendor actions, so it requires
+separate authorization.
 
 ## Isolated source interoperability
 

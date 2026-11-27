@@ -41,14 +41,21 @@ CLI invocation always requires Project write and Plugin use, including native
 inspection commands. Skills consumption requires caller Skills and Plugin use;
 shipping a skill does not request provider Skills permission.
 
-The current offline declaration omits sandbox settings: sandbox execution,
-network none and no user-config read exception. The host owns the persistent
-plugin HOME/cache/state container and per-execution scratch. The adapter preserves
-that environment while removing reserved host variables and unrelated descriptors
-from vendor children. Real Claude config, credential, cache, Keychain, network and
-login requirements remain unmeasured. Container login versus declared Full access
-is an explicit owner decision after those facts exist; this offline declaration
-makes no real-model suitability claim. Native approval remains independent.
+The manifest requests a custom sandbox network ceiling with three exact hosts.
+Anthropic's current network reference identifies `api.anthropic.com` for Claude
+API requests, `platform.claude.com` for first-party OAuth token exchange and
+refresh, and `claude.ai` for account authentication. The pinned 2.1.59 executable
+contains the `platform.claude.com` token endpoint. Sign-in, token refresh, and
+authenticated model traffic in the Host sandbox require live account acceptance.
+[Claude Code network access requirements](https://code.claude.com/docs/en/network-config#network-access-requirements)
+
+The Host reviews the ceiling at enablement and requires fresh approval for a
+widening. The owner can narrow the selection, subject to Host policy. The
+declaration uses `include_trusted = false`, with Full access off and no user-config
+read exception. The Host owns persistent provider HOME, cache and state paths and
+per-execution scratch. The adapter preserves that environment and removes
+reserved Host variables and unrelated descriptors from vendor children. Native
+approval remains independent.
 
 ## Host risk metadata
 

@@ -49,9 +49,10 @@ from `Examples/settings.json`.
 
 ## Install
 
-1. Install and authenticate Claude Code yourself, and provide Python 3.13 or newer on the
-   Computer MCP launch `PATH`. The plugin never installs or updates either, logs in, creates setup
-   tokens or copies credentials.
+1. Install Claude Code 2.1.59 and provide Python 3.13 or newer on the Computer MCP launch
+   `PATH`. Sign in yourself with `claude auth login` in the state used by the executable.
+   Installed runs use the Host-managed provider state. See the
+   [installation guide](docs/Reference/Installation.md#claude-code-sign-in).
 2. Build the archive:
 
    ```sh
@@ -111,10 +112,9 @@ write, with MCP caller read overrides for list/result/events. CLI still requires
 Project write; Skills requires caller Skills and Plugin use. Host approval does
 not grant native vendor approval.
 
-The offline sandbox declaration has network none and no config-read exception.
-Native config/login/network requirements and the owner runtime-mode choice remain
-pending, as do matched-host runtime and signed-App acceptance. Authenticated
-execution and production activation are separate acceptance steps.
+The sandbox requests only the Claude API and first-party authentication hosts.
+The Host reviews the network ceiling at enablement and applies the owner's selection
+and policy limits. See the [sandbox contract](docs/Reference/Interface.md#reviewed-declarations-and-caller-admission).
 
 ## Contributing
 

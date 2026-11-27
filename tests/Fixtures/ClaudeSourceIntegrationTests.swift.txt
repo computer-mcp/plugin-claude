@@ -94,13 +94,24 @@ struct ClaudeSourceIntegrationTests {
     try #require(package.manifest.id == "claude")
     try #require(package.manifest.permissions?.map(\.id) == [.project])
     try #require(package.manifest.permissions?.first?.access == .write)
-    try #require(package.manifest.sandbox == nil)
+    let sandbox = try #require(package.manifest.sandbox)
+    try #require(!sandbox.fullAccess && sandbox.readExceptions == nil)
+    try #require(
+      sandbox.network == .custom(
+        hosts: ["api.anthropic.com", "claude.ai", "platform.claude.com"], includeTrusted: false))
+    let declarations = PluginPermissionDeclarations(package.manifest)
+    var previous = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(declarations)) as? [String: Any])
+    previous.removeValue(forKey: "sandbox")
+    let prior = try JSONDecoder().decode(
+      PluginPermissionDeclarations.self, from: JSONSerialization.data(withJSONObject: previous))
+    try #require(declarations.update(from: prior) == .widening)
     try #require(package.manifest.cli.map(\.id) == ["claude"])
     try #require(package.manifest.mcp.map(\.id) == ["stream"])
     try #require(package.manifest.skills.map(\.id) == ["claude-code"])
     let reviewed = try PluginContributionRequirements(
       sourceDigest: PluginStore.manifestDigest(package.manifest),
-      declarations: .init(package.manifest), componentID: "stream")
+      declarations: declarations, componentID: "stream")
     for name in ["claude.run.list", "claude.run.result", "claude.run.events"] {
       try #require(reviewed.requirements(for: name)?.project == .read)
     }

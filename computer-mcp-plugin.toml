@@ -8,8 +8,8 @@ description = "Claude Code headless CLI automation plus a streaming CLI-to-MCP a
 [[dependencies]]
 id = "claude-code"
 commands = ["claude"]
-instructions = "Install and authenticate Claude Code separately. This plugin never installs, updates, logs in, creates setup tokens, or copies Claude credentials."
-documentation = "https://docs.anthropic.com/en/docs/claude-code/cli-reference"
+instructions = "Install Claude Code 2.1.59 and sign in yourself with claude auth login. Installed runs use the Host-managed provider state."
+documentation = "https://code.claude.com/docs/en/cli-reference"
 
 [[dependencies]]
 id = "python-runtime"
@@ -21,6 +21,10 @@ documentation = "https://www.python.org/downloads/"
 id = "project"
 access = "write"
 purpose = "Run requested Claude Code tasks and edits in owner-selected project worktrees, and manage the executions this adapter owns."
+
+[sandbox]
+network = { level = "custom", hosts = ["api.anthropic.com", "platform.claude.com", "claude.ai"], include_trusted = false }
+purpose = "Reach the Claude API and first-party account authentication and token services."
 
 [[cli]]
 id = "claude"

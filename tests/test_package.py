@@ -25,7 +25,13 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(manifest['permissions'],[{
             'id':'project','access':'write',
             'purpose':'Run requested Claude Code tasks and edits in owner-selected project worktrees, and manage the executions this adapter owns.'}])
-        self.assertNotIn('sandbox',manifest)
+        sandbox = manifest['sandbox']
+        self.assertEqual(set(sandbox), {'network', 'purpose'})
+        self.assertEqual(sandbox['network'], {
+            'level': 'custom',
+            'hosts': ['api.anthropic.com', 'platform.claude.com', 'claude.ai'],
+            'include_trusted': False,
+        })
         mcp=manifest['mcp'][0]
         self.assertEqual(mcp['requirements'],{'project':'write'})
         self.assertEqual(mcp['tool_requirements'],{
