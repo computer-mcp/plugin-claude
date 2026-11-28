@@ -8,7 +8,7 @@ description = "Claude Code headless CLI automation plus a streaming CLI-to-MCP a
 [[dependencies]]
 id = "claude-code"
 commands = ["claude"]
-instructions = "Install Claude Code 2.1.59 and bind its executable. A fresh Host install supports configuration and tool discovery. Model runs need authentication in the isolated provider state, and first sign-in there is unavailable. For standalone use, run claude auth login in a terminal with the same Claude Code state as the standalone process."
+instructions = "Install Claude Code 2.1.59 and bind its executable."
 documentation = "https://code.claude.com/docs/en/cli-reference"
 
 [[dependencies]]

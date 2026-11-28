@@ -50,10 +50,9 @@ from `Examples/settings.json`.
 ## Install
 
 1. Install Claude Code 2.1.59 and provide Python 3.13 or newer on the Computer MCP launch
-   `PATH`. For standalone use, run `claude auth login` in a terminal with the same
-   Claude Code state as the standalone process. A fresh Host install supports setup and
-   discovery, but first sign-in for its isolated provider state is unavailable. See the
-   [installation guide](docs/Reference/Installation.md#claude-code-sign-in).
+   `PATH`. Sign in with Claude Code on your computer for model use. The
+   [installation guide](docs/Reference/Installation.md#claude-code-session) describes
+   how the plugin reports the vendor's session status.
 2. Build the archive:
 
    ```sh

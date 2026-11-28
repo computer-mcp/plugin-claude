@@ -14,20 +14,13 @@ The example exposes this plugin's complete MCP tool catalog with no extra prefix
 
 Computer MCP publishes plugin configuration changes to connected clients atomically. New calls use the current configuration; existing work keeps its owning runtime until release. Installation does not grant access, and later calls use current authorization. Do not restart the active development control connection merely to test installation.
 
-## Claude Code sign-in
+## Claude Code session
 
-For standalone Claude Code or direct use of `bin/claude-mcp-adapter`, run
-`claude auth login` in a terminal with the same Claude Code account state as the
-standalone process. The command signs in to the state selected by its launching
-environment. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
-
-On a fresh Host install, you can bind the executable, configure and enable the
-plugin, and check installation and tool discovery while signed out. Installed CLI
-and MCP runs use the registered provider's isolated state, with a Host-managed
-HOME, cache and state paths, plus per-execution scratch. A standalone terminal
-login stays in the terminal's Claude Code state. The current Host and installed
-plugin expose no command for first sign-in in the provider state, so authenticated
-model runs remain unavailable on a fresh install.
+Sign in using Claude Code on your computer. You can install the plugin and discover
+its tools before signing in. When you run a prompt, the bound Claude Code executable
+uses the account state available to that process. The Host starts it with a private
+home, so a successful terminal login alone does not establish that the installed
+runtime can use that session.
 
 In clean signed-out state, Claude Code 2.1.59 reports `loggedIn: false` and
 `authMethod: "none"` from `claude auth status` and exits with status `1`.
