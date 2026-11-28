@@ -1,283 +1,320 @@
-"""Validate an exact plugin archive against an unchanged, isolated host binary.
+"""Run the deterministic Claude companion against explicit clean source commits.
 
-Uses the host's bounded archive worker and standalone MCP runtime. It never
-connects to production control sockets, registers a production plugin, loads
-production credentials, or invokes a real model. Runtime calls use fixtures.
+The driver exports both commits into an external output directory. The registered
+selector builds and installs the exact plugin archive into its fixture database. It never edits
+input checkouts, contacts an installed App or launches the vendor's executable.
 """
+
 import argparse
-import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import subprocess
 import sys
-import tempfile
+import tarfile
 import time
-import tomllib
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / 'tests'))
-from support import Client
-
-
-def require(condition, message):
-    if not condition:
-        raise AssertionError(message)
+FIXTURE = "ClaudeSourceIntegrationTests.swift"
+SOURCE_CASES = {
+    "sourceAdmission": {"declarations", "development-registration", "dual-principal", "read-write", "skills"},
+    "sourceExecutionLifecycle": {
+        "cli", "mcp", "worktree-boundaries", "container-persistence", "continuation", "cancellation",
+    },
+    "sourceCallerRevocation": {"scoped-revocation"},
+    "sourceProviderRevocation": {"provider-revocation"},
+    "sourceHostRemoval": {"host-removal", "cleanup"},
+}
+REGISTERED_CASES = {
+    "installed-reviewed-archive", "print-stdin-eof", "addressed-retirement",
+    "independent-run", "native-final-and-exit", "retained-release",
+}
+SELECTORS = {
+    "source": "ClaudeSourceIntegrationTests[./](" + "|".join(SOURCE_CASES) + ")",
+    "registered-print": "ClaudeSourceIntegrationTests.registeredManagedPrint",
+}
+INPUTS = (
+    "computer-mcp-plugin.toml", "cli-tree.json",
+    "tests/Fixtures/" + FIXTURE + ".txt", "tests/Fixtures/host_vendor.py",
+    "bin/claude-mcp-adapter", "bin/claude-mcp-managed", "bin/claude_vendor_execution.py",
+    "bin/plugin_runtime.py", "claude-vendor-execution.json",
+    "scripts/build_package.py", "scripts/validate_host.py",
+)
 
 
 def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def capture(arguments, cwd, environment, timeout=30):
-    result = subprocess.run(arguments, cwd=cwd, env=environment,
-                            capture_output=True, timeout=timeout)
-    require(result.returncode == 0,
-            'Command failed: ' + repr(arguments[:3]) + '\n' + result.stderr.decode(errors='replace')[:4096]
-            + '\n' + result.stdout.decode(errors='replace')[:4096])
-    return result.stdout
+def revision(value):
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise argparse.ArgumentTypeError("Use a full lowercase 40-character commit SHA")
+    return value
 
 
-def checked(client, name, arguments=None):
-    response = client.call(name, arguments or {}, timeout=20)
-    require('error' not in response and not response['result'].get('isError'),
-            'Tool failed: ' + name + '\n' + json.dumps(response)[:8192])
-    return Client.value(response)
+def absolute(value):
+    path = Path(value)
+    if not path.is_absolute():
+        raise argparse.ArgumentTypeError("Use an absolute path")
+    return path.resolve()
 
 
-def wait_for(callback, predicate, seconds=15):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        value = callback()
-        if predicate(value):
-            return value
-        time.sleep(.03)
-    raise AssertionError('Isolated execution did not reach its postcondition')
+def git(root, *arguments):
+    return subprocess.check_output(
+        ["git", "-C", str(root), *arguments], text=True,
+        stderr=subprocess.PIPE, timeout=15).strip()
 
 
-def configuration(package, project, cli_fixture, vendor_fixture, vendor, readonly=False):
-    quote = json.dumps
-    return f'''schema_version = 1
-[server]
-name = "plugin-contract-validation"
-[runtime]
-caller = "local-mcp"
-profile = "validation"
-project_id = "primary"
-[policy]
-default_timeout_ms = 15000
-max_output_bytes = 1048576
-shell_enabled = true
-[[profiles]]
-id = "validation"
-mode = "{'read-only' if readonly else 'local-full-access'}"
-confirmation_policy = "never"
-capabilities = ["*"]
-projects = ["primary"]
-allowed_callers = ["local-mcp"]
-full_shell_enabled = {'false' if readonly else 'true'}
-[[projects]]
-id = "primary"
-display_name = "Isolated fixture project"
-path = {quote(str(project))}
-[[cli.commands]]
-id = "fixture-cli"
-executable = {quote(str(cli_fixture))}
-allow_any_args = false
-tree = {{ kind = "file", path = {quote(str(package / 'cli-tree.json'))} }}
-[[mcp.servers]]
-id = "fixture-adapter"
-transport = "stdio"
-command = {quote(str(package / f'bin/{vendor}-mcp-adapter'))}
-args = ["--executable", {quote(str(vendor_fixture))}]
-exposure = "reexport"
-prefix = ""
-allow_any_tool = true
-capabilities = ["tools"]
-startup_timeout_ms = 10000
-request_timeout_ms = 20000
-[skills]
-enabled = true
-[[skills.roots]]
-id = "fixture-skills"
-path = {quote(str(package / 'skills'))}
-[builtin]
-enabled = []
-'''
+def verify_source(root, sha):
+    revision(sha)
+    if not root.is_dir() or git(root, "rev-parse", "--show-toplevel") != str(root):
+        raise ValueError("Source must be an existing repository root")
+    if git(root, "rev-parse", "HEAD") != sha:
+        raise ValueError("Source HEAD differs from its supplied commit")
+    if git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise ValueError("Source checkout must be clean, including untracked files")
 
 
-def validate(host, archive, output, expected_host_version, require_work_ownership=False):
-    host = host.resolve(strict=True)
-    archive = archive.resolve(strict=True)
-    output.mkdir(parents=True, exist_ok=False)
-    manifest = tomllib.loads((ROOT / 'computer-mcp-plugin.toml').read_text())
-    vendor = manifest['id']
-    tree = json.loads((ROOT / 'cli-tree.json').read_text())
-    expected_version = next(c['stdout'] for c in tree['executable_checks'] if c['args'] == ['--version'])
-    host_hash = digest(host)
-    archive_hash = digest(archive)
-    checks = {}
-    with tempfile.TemporaryDirectory(prefix='computer-mcp-plugin-acceptance-') as directory:
-        work = Path(directory)
-        home = work / 'home'
-        home.mkdir()
-        environment = {'PATH': os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin', '/usr/sbin', '/sbin']),
-                       'HOME': str(home), 'TMPDIR': str(work), 'PYTHONDONTWRITEBYTECODE': '1', 'LANG': 'en_US.UTF-8'}
-        version = capture([str(host), '--version'], work, environment).decode().strip()
-        require(bool(expected_host_version) and version.startswith(expected_host_version + ' '),
-                'Host version differs from the explicitly selected acceptance version')
-        inputs = work / 'inputs'
-        inputs.mkdir()
-        (inputs / f'{vendor}.zip').write_bytes(archive.read_bytes())
-        index = [{'id': vendor, 'version': manifest['version'], 'archive': f'{vendor}.zip', 'sha256': archive_hash}]
-        (inputs / 'index.json').write_text(json.dumps(index))
-        receipt = capture([str(host), '_bundle-plugins', '--index', str(inputs / 'index.json'),
-                           '--output', str(work / 'packages'), '--architectures', 'arm64'], work, environment, 90)
-        (output / 'archive-validation.json').write_bytes(receipt)
-        package = work / 'packages' / vendor
-        require((package / 'computer-mcp-plugin.toml').read_bytes() == (ROOT / 'computer-mcp-plugin.toml').read_bytes(),
-                'Extracted manifest differs from source')
-        require((package / 'cli-tree.json').read_bytes() == (ROOT / 'cli-tree.json').read_bytes(),
-                'Extracted CLI contract differs from source')
-        require(os.access(package / f'bin/{vendor}-mcp-adapter', os.X_OK), 'Host extraction lost executable mode')
-        checks['archive_and_manifest'] = 'passed'
-        require(not list(package.rglob('*.pyc')) and not list(package.rglob('__pycache__')), 'Archive contains Python cache')
+def contains(parent, child):
+    return child == parent or parent in child.parents
 
-        project = work / 'project'
-        project.mkdir()
-        version_file = work / 'version.txt'
-        version_file.write_text(expected_version)
-        cli_fixture = work / 'native-cli-fixture'
-        cli_fixture.write_text('#!' + sys.executable + '\nimport json,sys\nfrom pathlib import Path\n'
-                               + 'if sys.argv[1:]==["--version"]:\n    print(Path(' + repr(str(version_file)) + ').read_text(),end="")\n'
-                               + 'else:\n    print(json.dumps({"argv":sys.argv[1:],"stdin":sys.stdin.read()}))\n')
-        cli_fixture.chmod(0o755)
-        config = work / 'gateway.toml'
-        config.write_text(configuration(package, project, cli_fixture, ROOT / 'tests/Fixtures/vendor.py', vendor))
-        checked_config = capture([str(host), 'config', 'validate', '--config', str(config)], work, environment)
-        (output / 'configuration-validation.txt').write_bytes(checked_config)
-        client = Client(str(project), environment, [str(host), 'serve', 'stdio', '--config', str(config)])
+
+def location_contains(parent, child):
+    if contains(parent, child):
+        return True
+    try:
+        parent_stat = parent.stat()
+    except FileNotFoundError:
+        return False
+
+    # A fresh output can have missing parents before reaching an existing alias.
+    for ancestor in (child, *child.parents):
         try:
-            catalog = client.request('tools/list')['result']['tools']
-            (output / 'catalog.json').write_text(json.dumps(catalog, indent=2)+'\n')
-            projected = [tool for tool in catalog if tool.get('_meta', {}).get('cli', {}).get('command') == 'print']
-            require(len(projected) == 1, 'Expected one real host-projected print tool')
-            native_names = [tool['name'] for tool in catalog if tool['name'].startswith(vendor + '.')]
-            require(len(native_names) == 7, 'Adapter catalog missing required tools')
-            checks['catalog'] = {'status':'passed', 'cli_tools':len(projected), 'mcp_tools':len(native_names)}
-            if require_work_ownership:
-                require(all(key not in tool.get('_meta',{}) for tool in catalog
-                            for key in ('io.github.computer-mcp/work','io.github.computer-mcp/continuation')),
-                        'Gateway exports advertise downstream-only ownership metadata')
-            def work_status(count):
-                def observe():
-                    servers = checked(client,'mcp.servers.status',{'server':'fixture-adapter'})['servers']
-                    value = servers[0]['connection'].get('provider_work')
-                    require(isinstance(value,dict), 'Candidate host does not expose provider-work observation')
-                    return value
-                return wait_for(observe, lambda value:value['resource_count']==count
-                                and value['unsettled_invocation_count']==0 and not value['observation_pending'])
-            prompt = "--leading 'quotes' 中文\nnot-a-shell-command"
-            arguments = {'prompt': prompt, 'permission_mode': 'plan'}
-            result = checked(client, projected[0]['name'], arguments)
-            argv = result['data']['argv']
-            require(argv[-2:] == ['--', prompt], 'Host did not preserve exact argv argument boundaries')
-            require(result['exit_code'] == 0, 'CLI result did not capture exit status')
-            checks['cli_argv_and_json'] = 'passed'
-            invalid = client.call(projected[0]['name'], dict(arguments, unknown_argument=True))
-            require('error' in invalid or invalid['result'].get('isError'), 'Unknown CLI arguments were accepted')
-            version_file.write_text('incompatible-fixture-version\n')
-            mismatch = client.call(projected[0]['name'], arguments)
-            require('error' in mismatch or mismatch['result'].get('isError'), 'Incompatible CLI version was executed')
-            version_file.write_text(expected_version)
-            bypass = client.call('cli.exec', {'id':'fixture-cli', 'argv':['--help']})
-            require('error' in bypass or bypass['result'].get('isError'), 'Raw execution bypassed the CLI tree')
-            checks['cli_negative_contracts'] = 'passed'
+            ancestor_stat = ancestor.stat()
+        except FileNotFoundError:
+            continue
+        if os.path.samestat(parent_stat, ancestor_stat):
+            return True
+    return False
 
-            work_evidence = None
-            if require_work_ownership:
-                active = checked(client, 'claude.run.start', {'prompt':'slow'})['run_id']
-                work_evidence = {'running':work_status(1)}
-                refusal = client.call('claude.run.release', {'run_id':active})
-                require(Client.value(refusal).get('error',{}).get('code')=='run_active', 'Active run was released')
-                checked(client, 'claude.run.cancel', {'run_id':active})
-                cancelled = wait_for(lambda:Client.value(client.call('claude.run.result', {'run_id':active})), lambda v:v.get('completed'))
-                require(cancelled['cleanup_confirmed'] and cancelled['state']=='cancelled', 'Cancellation cleanup was not confirmed')
-                work_evidence['cancelled_result_retained'] = work_status(1)
-                checked(client, 'claude.run.release', {'run_id':active})
-                work_evidence['cancelled_result_released'] = work_status(0)
-            run = checked(client, 'claude.run.start', {'prompt':'hello','permission_mode':'plan'})['run_id']
-            completed = wait_for(lambda: checked(client, 'claude.run.result', {'run_id':run}), lambda v:v.get('completed'))
-            require(completed['result'] == 'hello', 'Native final result was not preserved')
-            checked(client, 'claude.run.events', {'run_id':run,'max_bytes':2048})
-            if work_evidence is not None:
-                work_evidence['completed_result_retained'] = work_status(1)
-            checked(client, 'claude.run.release', {'run_id':run})
-            require(not checked(client, 'claude.run.list')['runs'], 'Released run result remains retained')
-            if work_evidence is not None:
-                work_evidence['released'] = work_status(0)
-                require(len({value['instance_id'] for value in work_evidence.values()})==1, 'Ownership crossed provider instances')
-                checks['provider_work'] = work_evidence
-            invalid = client.call('claude.run', {'prompt':'not-executed','permission_mode':'bypassPermissions'})
-            require(invalid['result'].get('isError'), 'Bypass mode was admitted')
-            checks['mcp_execution_and_events'] = 'passed'
-        finally:
-            client.close()
-        checks['standalone_shutdown'] = 'passed'
-        config.write_text(configuration(package, project, cli_fixture, ROOT / 'tests/Fixtures/vendor.py', vendor, readonly=True))
-        client = Client(str(project), environment, [str(host), 'serve', 'stdio', '--config', str(config)])
+
+def validate_locations(host, plugin, output):
+    if location_contains(host, plugin) or location_contains(plugin, host):
+        raise ValueError("Host and plugin must be separate, non-nested source checkouts")
+    if any(location_contains(root, output) or location_contains(output, root) for root in (host, plugin)):
+        raise ValueError("Output must be outside both source checkouts and their ancestors")
+    if output.exists() or output.is_symlink():
+        raise ValueError("Output must be a new external directory")
+
+
+def run_process(command, cwd, environment, log, timeout):
+    """Bound execution/output and reap the driver-owned command group on every exit."""
+    with log.open("wb") as stream:
+        process = subprocess.Popen(
+            command, cwd=cwd, env=environment, stdout=stream,
+            stderr=subprocess.STDOUT, start_new_session=True)
+        deadline = time.monotonic() + timeout
+        failure = None
         try:
-            readonly_tools = client.request('tools/list')['result']['tools']
-            require(not any(tool.get('_meta',{}).get('cli') for tool in readonly_tools), 'Read-only profile exposed arbitrary CLI execution')
-            require(not any(tool['name'].startswith(vendor+'.') for tool in readonly_tools), 'Read-only profile exposed vendor execution')
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Command exceeded its deadline")
+                if log.stat().st_size > 32 * 1024 * 1024:
+                    raise RuntimeError("Command exceeded its 32 MiB output bound")
+                time.sleep(0.05)
+            if process.returncode:
+                raise RuntimeError(f"Command exited {process.returncode}; inspect {log}")
+        except BaseException as error:
+            failure = error
         finally:
-            client.close()
-        checks['read_only_profile'] = 'passed'
-        restricted = configuration(package, project, cli_fixture, ROOT / 'tests/Fixtures/vendor.py', vendor)
-        restricted = restricted.replace('mode = "local-full-access"', 'mode = "project-operations"')
-        restricted = restricted.replace('full_shell_enabled = true', 'full_shell_enabled = false')
-        execution_tool = 'claude.run'
-        # An explicit low host risk must not bypass the publisher's execution floor.
-        restricted += '\n[mcp.servers.tool_risks]\n' + json.dumps(execution_tool) + ' = "read-only"\n'
-        config.write_text(restricted)
-        client = Client(str(project), environment, [str(host), 'serve', 'stdio', '--config', str(config)])
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+                if failure is None:
+                    failure = RuntimeError("Command left descendants; its group was terminated")
+            process.wait()
+        if failure:
+            raise failure
+        if log.stat().st_size > 32 * 1024 * 1024:
+            raise RuntimeError("Command exceeded its 32 MiB output bound")
+
+
+def extract_source(archive, destination):
+    """Export only bounded regular files and directories into a fresh directory."""
+    if archive.stat().st_size > 128 * 1024 * 1024:
+        raise ValueError("Source archive exceeds 128 MiB")
+    destination.mkdir()
+    total = 0
+    with tarfile.open(archive, "r:") as source:
+        for index, entry in enumerate(source):
+            target = destination / entry.name
+            if (index >= 20000 or entry.name.startswith("/")
+                    or ".." in Path(entry.name).parts or not contains(destination, target)
+                    or not (entry.isdir() or entry.isfile())):
+                raise ValueError("Unsafe or oversized source archive")
+            total += entry.size
+            if total > 128 * 1024 * 1024:
+                raise ValueError("Expanded source exceeds 128 MiB")
+            if entry.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with source.extractfile(entry) as incoming, target.open("xb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+                target.chmod(0o755 if entry.mode & 0o111 else 0o644)
+
+
+def export_source(root, sha, destination, environment, output):
+    archive = output / (destination.name + ".tar")
+    run_process(
+        ["git", "-C", str(root), "archive", "--format=tar", "--output", str(archive), sha],
+        output, environment, output / (destination.name + "-export.log"), 30)
+    try:
+        extract_source(archive, destination)
+    finally:
+        archive.unlink(missing_ok=True)
+
+
+def validate_evidence(observed, run_id, expected_cases):
+    cases = observed.get("cases")
+    if (observed.get("kind") != "deterministic" or observed.get("run_id") != run_id
+            or type(observed.get("tests_executed")) is not int or observed["tests_executed"] != 1
+            or not isinstance(cases, list) or len(cases) != len(expected_cases)
+            or any(not isinstance(case, str) for case in cases) or set(cases) != expected_cases):
+        raise ValueError("Consumer case evidence is incomplete, duplicated or stale")
+
+
+def read_case_evidence(path, run_id, expected_cases):
+    if path.stat().st_size > 65536:
+        raise ValueError("Case evidence exceeds its bound")
+    observed = json.loads(path.read_text())
+    validate_evidence(observed, run_id, expected_cases)
+    return observed
+
+
+def collect_evidence(evidence, run_id, suite):
+    if suite == "registered-print":
+        return read_case_evidence(evidence, run_id, REGISTERED_CASES)
+    fragments = {
+        f"cases-{test}.json": cases for test, cases in SOURCE_CASES.items()
+    }
+    if {path.name for path in evidence.parent.glob("cases-*.json")} != fragments.keys():
+        raise ValueError("Source consumer must report evidence for every selected test")
+    cases = []
+    for name, expected in fragments.items():
+        cases.extend(read_case_evidence(evidence.with_name(name), run_id, expected)["cases"])
+    observed = {"kind": "deterministic", "run_id": run_id,
+                "tests_executed": len(fragments), "cases": sorted(cases)}
+    with evidence.open("x") as destination:
+        json.dump(observed, destination, indent=2, sort_keys=True)
+        destination.write("\n")
+    return observed
+
+
+def run(args):
+    suite = args.suite
+    validate_locations(args.host_source, args.plugin_source, args.output)
+    verify_source(args.host_source, args.host_sha)
+    verify_source(args.plugin_source, args.plugin_sha)
+    before = {name: digest(args.plugin_source / name) for name in INPUTS}
+    args.output.mkdir(parents=True)
+    output = args.output
+    host = output / "host-source"
+    plugin = output / "plugin-source"
+    evidence = output / "cases.json"
+    run_id = os.urandom(16).hex()
+    result = {
+        "host_sha": args.host_sha, "plugin_sha": args.plugin_sha,
+        "inputs_sha256": before, "run_id": run_id, "kind": "deterministic", "suite": suite,
+        "native_verified": False, "status": "failed", "cleanup": "pending",
+        "python": str(Path(sys.executable).resolve()), "python_version": sys.version,
+    }
+    environment = dict(os.environ)
+    # No implicit Claude source, target or evidence selection from the parent session.
+    for key in list(environment):
+        if key.startswith("COMPUTER_MCP_CLAUDE_"):
+            del environment[key]
+    environment.update({
+        "COMPUTER_MCP_CLAUDE_PLUGIN": str(plugin),
+        "COMPUTER_MCP_CLAUDE_CASES": str(evidence),
+        "COMPUTER_MCP_CLAUDE_RUN_ID": run_id,
+        "COMPUTER_MCP_CLAUDE_PYTHON": str(Path(sys.executable).resolve()),
+    })
+    try:
+        export_source(args.host_source, args.host_sha, host, environment, output)
+        export_source(args.plugin_source, args.plugin_sha, plugin, environment, output)
+        for name, expected in before.items():
+            if digest(plugin / name) != expected:
+                raise ValueError("Exported plugin differs from its source commit")
+        target = host / "Tests/ComputerMCPMacOSTests" / FIXTURE
+        if not target.parent.is_dir():
+            raise ValueError("Host does not provide the required macOS test target")
+        with target.open("xb") as destination:
+            destination.write((plugin / INPUTS[2]).read_bytes())
+        if suite == "registered-print":
+            packages = output / "package"
+            run_process(
+                [sys.executable, "-B", str(plugin / "scripts/build_package.py"), str(packages)],
+                plugin, environment, output / "package-build.log", 30)
+            archive = packages / "claude.zip"
+            result["archive_sha256"] = digest(archive)
+            environment.update({
+                "COMPUTER_MCP_CLAUDE_ARCHIVE": str(archive),
+                "COMPUTER_MCP_CLAUDE_ARCHIVE_SHA256": result["archive_sha256"],
+            })
+        run_process(
+            ["/usr/bin/swift", "test", "--build-system", "native", "--scratch-path",
+             str(output / "build"), "--no-parallel", "--filter", SELECTORS[suite]],
+            host, environment, output / "swift-test.log", args.timeout)
+        observed = collect_evidence(evidence, run_id, suite)
+        if {name: digest(args.plugin_source / name) for name in INPUTS} != before:
+            raise ValueError("Source input changed during verification")
+        result["cases"] = sorted(observed["cases"])
+        result["tests_executed"] = observed["tests_executed"]
+        result["status"] = "passed"
+    finally:
+        # Logs/case evidence survive; all exported sources and build output are owned here.
+        for path in (host, plugin, output / "build"):
+            if path.is_symlink():
+                raise RuntimeError("Run-owned cleanup target was replaced by a symlink")
+            if path.exists():
+                shutil.rmtree(path)
+        result["cleanup"] = ("confirmed" if result["status"] == "passed"
+                             else "exports-removed; fixture-process-cleanup-unverified")
         try:
-            tools = client.request('tools/list')['result']['tools']
-            require(execution_tool not in {tool['name'] for tool in tools}, 'Restricted profile exposed arbitrary vendor execution')
-            checked(client, 'claude.run.list')
-            for name, arguments in [(execution_tool, {'prompt':'must-not-execute'}),
-                                    ('mcp.tools.call', {'server':'fixture-adapter','tool':execution_tool,'arguments':{'prompt':'must-not-execute'}})]:
-                denied = client.call(name, arguments)
-                require('error' in denied or denied['result'].get('isError'), 'Restricted profile admitted vendor execution')
+            verify_source(args.host_source, args.host_sha)
+            verify_source(args.plugin_source, args.plugin_sha)
+        except BaseException:
+            result["status"] = "failed"
+            raise
         finally:
-            client.close()
-        checks['publisher_floor_under_restricted_profile'] = 'passed'
-    require(digest(host) == host_hash and digest(archive) == archive_hash, 'Host or archive changed during acceptance')
-    report = {'status':'passed', 'observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              'plugin_id':vendor, 'plugin_version':manifest['version'], 'host_version':version,
-              'expected_host_version':expected_host_version,
-              'host_sha256':host_hash, 'archive_sha256':archive_hash, 'checks':checks,
-              'scope':'host archive validation and ordinary standalone registrations with inert vendor fixtures',
-              'production_installation':False, 'authenticated_model_execution':False,
-              'host_database_or_control_socket_used':False}
-    (output / 'acceptance.json').write_text(json.dumps(report, indent=2)+'\n')
-    print(json.dumps(report, sort_keys=True))
+            (output / "receipt.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    print(json.dumps({"receipt": str(output / "receipt.json"), "status": "passed"}))
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', required=True, type=Path)
-    parser.add_argument('--expected-host-version', required=True,
-                        help='Exact reviewed host release version, for example 1.3.0')
-    parser.add_argument('--archive', required=True, type=Path)
-    parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--require-work-ownership', action='store_true',
-                        help='Require a candidate host to observe active and retained run ownership through release')
-    args = parser.parse_args()
-    validate(args.host, args.archive, args.output, args.expected_host_version, args.require_work_ownership)
+    parser.add_argument("--host-source", required=True, type=absolute)
+    parser.add_argument("--host-sha", required=True, type=revision)
+    parser.add_argument("--plugin-source", required=True, type=absolute)
+    parser.add_argument("--plugin-sha", required=True, type=revision)
+    parser.add_argument("--output", required=True, type=absolute)
+    parser.add_argument("--suite", choices=SELECTORS, default="source")
+    parser.add_argument("--timeout", type=int, default=900)
+    args = parser.parse_args(argv)
+    if not 1 <= args.timeout <= 1800:
+        parser.error("--timeout must be between 1 and 1800 seconds")
+    try:
+        run(args)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"Source verification failed: {error}\n")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

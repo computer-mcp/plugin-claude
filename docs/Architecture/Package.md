@@ -13,4 +13,27 @@ and process cleanup are prerequisites for result eviction or explicit release.
 Reading a result has no release side effect. The adapter bounds and versions
 complete snapshots; the host owns configuration generations and routing.
 
-The documented headless CLI is the selected upstream interface; the full Agent SDK's interactive callbacks and hosted Managed Agents are not substituted or claimed. Tests use deterministic peers and controlled process trees. Scripts validate real native version/help, deterministic archives and the unchanged host in isolated standalone mode. Authenticated backend execution and production activation require separate evidence.
+The documented headless CLI is the selected upstream interface; the full Agent SDK's interactive callbacks and hosted Managed Agents are not substituted or claimed. Tests use deterministic peers and controlled process trees. Separate scripts validate native version/help, deterministic archives, and exact clean host/plugin source snapshots with an isolated development registration. Authenticated backend execution and production activation require separate evidence.
+
+The manifest owns provider purposes and MCP caller requirement maps. The host
+reviews their digest, provisions containers, intersects caller/provider grants,
+and creates/selects/removes worktrees. No private host-services declaration is
+needed: the adapter does not own lifecycle callbacks. Retained work uses the
+ordinary MCP work resource with its original acquisition identity.
+
+`scripts/validate_host.py` exports explicit clean commits, injects the plugin-owned
+Swift companion only into the exported host test target, and records a fresh run
+nonce, exact source pair and completed cases. It never writes to either input
+checkout or uses an installed App/control socket. Its subprocess groups, exported
+sources and build directory are bounded and cleaned; logs and receipts remain in
+the supplied evidence directory. Failure receipts distinguish export cleanup from
+unverified fixture cleanup. The separate `scripts/validate_archive.py` owns archive
+worker checks and makes no runtime-admission claim.
+
+
+The installed stream entry point requires the private Host vendor execution channel.
+The package's reviewed signature binds the dependency, print argv recipe and tool
+effects. The adapter translates stream events and tracks its local run handles.
+The Host owns each run's version probe, workload, process retirement and receipts.
+The shared Python runtime continues to implement local process supervision for
+direct standalone MCP clients.

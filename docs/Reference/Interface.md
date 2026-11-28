@@ -4,9 +4,60 @@
 
 `cli-tree.json` is the canonical, explicitly partial command contract for the tested native Claude Code version. It maps print mode and declared options to exact argv with `--` before the prompt. New or changed upstream flags require a reviewed plugin update, not runtime parsing of human help.
 
-The native version assertion runs before each adapter execution and each host-projected CLI call. Native command availability does not establish account authentication or backend access. The CLI contribution returns a single native JSON result. The MCP adapter independently consumes print-mode stream-json with verbose and partial-message output; it does not parse the terminal UI or use hosted Managed Agents.
+The native version assertion runs before each print workload and each Host-projected CLI call. Native command availability does not establish account authentication or backend access. The CLI contribution returns a single native JSON result. The MCP adapter independently consumes print-mode stream-json with verbose and partial-message output; it does not parse the terminal UI or use hosted Managed Agents.
 
 The adapter implements newline-delimited MCP JSON-RPC initialization, tools/list, tools/call, resources/list, resources/read, ping and cancellation. Supported MCP dates are 2024-11-05, 2025-03-26 and 2025-06-18. Unsupported proposals receive a supported date, not an unimplemented echo. Tool schemas describe accepted arguments. Tool results use `structuredContent.result`; `isError` indicates a failed operation, distinct from a JSON-RPC protocol error.
+
+## Installed print execution
+
+The `stream` contribution uses `bin/claude-mcp-managed`. It requires Host negotiation
+before the MCP connection advertises managed execution. The manifest inventories the
+plugin files that bind the reviewed launch recipe, dependency and exact tool effects.
+The Host authorizes the invocation and selects the worktree, sandbox and executable.
+Each run has its own acquisition with distinct version and workload children.
+A detached run retains that original acquisition after the opening tool returns.
+
+The print workload closes stdin and streams output. There is no in-band interrupt
+for this command. Addressed cancellation retires the selected run's exact Host child.
+Request cancellation, deadlines and unusable streams also retire the owned run.
+A lost launch reply is reconciled through the original child IDs and does not replay
+the prompt. Final event, native session ID and native exit outcome remain available
+when cleanup cannot be confirmed. Uncertain cleanup keeps the run charged until
+ownership is settled.
+
+The standalone `bin/claude-mcp-adapter` entry point uses the existing local supervisor.
+Its absolute executable override and environment lookup are available to direct MCP clients.
+
+## Reviewed declarations and caller admission
+
+The manifest requests provider Project write for owner-selected project work and
+owned execution management. The `stream` MCP contribution requires caller Project
+write by default. Exact overrides require Project read for `claude.run.list`,
+`claude.run.result` and `claude.run.events`; cancellation and release retain write.
+Overrides replace the complete contribution default. Host effect requirements add
+to this map; runtime metadata never supplies caller requirements. Both provider
+and caller authority must admit the operation, including caller Plugin use.
+CLI invocation always requires Project write and Plugin use, including native
+inspection commands. Skills consumption requires caller Skills and Plugin use;
+shipping a skill does not request provider Skills permission.
+
+The manifest requests a custom sandbox network ceiling with three exact hosts.
+Anthropic's current network reference identifies `api.anthropic.com` for Claude
+API requests, `platform.claude.com` for first-party OAuth token exchange and
+refresh, and `claude.ai` for account authentication. The pinned 2.1.59 executable
+contains the `platform.claude.com` token endpoint. Live account verification is
+required to validate token refresh and authenticated model traffic in the Host
+sandbox. The [installation guide](Installation.md#claude-code-session) describes
+how the adapter reports a signed-out Claude Code process.
+[Claude Code network access requirements](https://code.claude.com/docs/en/network-config#network-access-requirements)
+
+The Host reviews the ceiling at enablement and requires fresh approval for a
+widening. The owner can narrow the selection, subject to Host policy. The
+declaration uses `include_trusted = false`, with Full access off and no user-config
+read exception. The Host owns persistent provider HOME, cache and state paths and
+per-execution scratch. The adapter preserves that environment and removes
+reserved Host variables and unrelated descriptors from vendor children. Native
+approval remains independent.
 
 ## Host risk metadata
 
@@ -87,7 +138,7 @@ Success requires exactly one valid native result event, a non-error native outco
 
 The default execution timeout is 600 seconds, with a configurable maximum of 1800 seconds. Process setup/cleanup can add bounded latency. Synchronous MCP cancellation targets the corresponding run. For detached runs use run.cancel with the returned run_id. Cancellation kills only the owned vendor process group; it does not erase a persisted conversation or retry the prompt.
 
-A private supervisor observes parent/connection shutdown, pins the native group leader until termination/reaping, and reports cleanup over a separate bounded channel. EOF without acknowledgement is cleanup_unconfirmed. This is owned process-group cleanup, not a sandbox preventing deliberately escaped descendants. Host private descriptors and reserved COMPUTER_MCP environment metadata are excluded from the native process. Native tools and configuration can still act beyond the initial working directory.
+For the standalone entry point, a private supervisor observes parent/connection shutdown, pins the native group leader until termination/reaping, and reports cleanup over a separate bounded channel. EOF without acknowledgement is cleanup_unconfirmed. This is owned process-group cleanup, not a sandbox preventing deliberately escaped descendants. Host private descriptors and reserved COMPUTER_MCP environment metadata are excluded from the native process. Native tools and configuration can still act beyond the initial working directory.
 
 ## Sources
 

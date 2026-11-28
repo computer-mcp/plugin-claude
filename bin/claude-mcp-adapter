@@ -15,6 +15,8 @@ from plugin_runtime import (EventBuffer, Failure, Job, MCPServer, Process, Tool,
     decoded, encoded, expected_version, integer_schema, load_package, resolve_executable, schema,
     text_schema, validate, verify_version)
 
+from claude_vendor_execution import CAPABILITY, ManagedClaudeRun, VendorChannel
+
 MANIFEST, TREE = load_package(__file__)
 VERSION = MANIFEST['version']
 # Reuse the package's native parameter schemas; MCP adds execution controls only.
@@ -76,6 +78,9 @@ class Run:
         self.final_event = None
         self.session_id = args.get('resume_session_id') or args.get('session_id')
         self.process = None
+        self.managed = None
+        self.managed_bound = threading.Event()
+        self.managed_detached = False
         self.version_process = None
         self.cleanup_confirmed = False
         self.cleanup_failure = None
@@ -102,17 +107,28 @@ class Run:
             self.value = {**(self.value or {}),'run_id':self.id,'session_id':self.session_id,'is_error':True,'cleanup_error':failure}
             self.value.setdefault('error',failure)
     def work(self,executable):
-        process = None
+        process = self.managed
+        code = None
         deadline = time.monotonic()+self.arguments.get('timeout_seconds',600)
         try:
-            command, mode = build_command(executable,self.arguments)
-            verify_version(executable,expected_version(TREE),self.job,os.getcwd(),self.retain_version_process)
-            with self.lock: self.version_process = None
-            self.job.check()
-            process = Process(command,os.getcwd())
+            if self.managed is not None:
+                mode = self.arguments.get('permission_mode', 'dontAsk')
+                if self.managed_detached:
+                    self.managed.detach()
+                self.job.check()
+                self.managed.bind()
+                self.managed_bound.set()
+                self.managed.launch(self.job, deadline)
+            else:
+                command, mode = build_command(executable,self.arguments)
+                verify_version(executable,expected_version(TREE),self.job,os.getcwd(),self.retain_version_process)
+                with self.lock: self.version_process = None
+                self.job.check()
+                process = Process(command,os.getcwd())
             with self.lock:
                 self.process, self.state = process, 'running'
-            process.end_input()
+            if self.managed is None:
+                process.end_input()
             final = None
             while True:
                 raw = process.read(deadline,self.job)
@@ -140,6 +156,9 @@ class Run:
                 self.value = {'run_id':self.id,'session_id':self.session_id,'result':final.get('result'),'subtype':final.get('subtype'),'is_error':failed,'total_cost_usd':final.get('total_cost_usd'),'permission_mode':mode,'exit_code':code,'final_event':final}
                 self.state = 'failed' if failed else 'completed'
         except Failure as error:
+            if (self.managed is not None and error.code in ('vendor_effect_stale', 'vendor_effect_denied')
+                    and self.managed.control_cancelled()):
+                error = Failure('cancelled', 'Claude run retired by its addressed cancellation')
             with self.lock:
                 self.state = 'cancelled' if error.code=='cancelled' else 'failed'
                 self.value = {'run_id':self.id,'session_id':self.session_id,'is_error':True,'error':{'code':error.code,'message':str(error)}}
@@ -154,33 +173,43 @@ class Run:
                     try: owned.close()
                     except Exception as error: self.record_cleanup_failure(error)
             with self.lock:
+                if code is not None:
+                    self.value['exit_code'] = code
                 self.cleanup_confirmed = self.cleanup_failure is None
                 self.arguments = {}
                 self.done.set()
+            self.managed_bound.set()
     def result(self,limit=128):
         with self.lock:
             if not self.done.is_set(): return self.info()
             value = dict(self.value)
             if self.final_event is not None:
                 value.update(final_event=self.final_event,result=self.final_event.get('result'),
+                             session_id=self.final_event['session_id'],
                              subtype=self.final_event['subtype'],total_cost_usd=self.final_event.get('total_cost_usd'))
         page = self.events.page(0,limit)
         return {**value,'state':self.state,'completed':True,'cleanup_confirmed':self.cleanup_confirmed,'events':[row['event'] for row in page['events']],'event_page':{k:v for k,v in page.items() if k!='events'},'events_truncated':page['has_more'] or page['missed_events'] or page['omitted_events']>0}
 
 
 class Claude:
-    def __init__(self,executable):
+    def __init__(self,executable,channel=None):
         self.executable = executable
+        self.channel = channel
         self.runs = OrderedDict()
         self.lock = threading.RLock()
         self.stopping = False
-    def start(self,args,_job):
+    def start(self,args,_job,*,detached=True):
         # Validate before reserving a run or executing a native version probe.
         _job.check()
         validate(args,RUN_SCHEMA)
-        executable = resolve_executable(self.executable,'CLAUDE_CODE_EXECUTABLE','claude')
+        executable = None
+        if self.channel is None:
+            executable = resolve_executable(self.executable,'CLAUDE_CODE_EXECUTABLE','claude')
         build_command(executable,args)
         run = Run(uuid.uuid4().hex,dict(args),_job.work_invocation)
+        if self.channel is not None:
+            run.managed = ManagedClaudeRun(self.channel, _job.work_invocation, run.id)
+            run.managed_detached = detached
         with self.lock:
             _job.check()
             if self.stopping or sum(not x.execution_finished() for x in self.runs.values())>=4:
@@ -191,10 +220,18 @@ class Claude:
                 del self.runs[old]
             self.runs[run.id] = run
             run.thread = threading.Thread(target=run.work,args=(executable,))
-            try: run.thread.start()
+            try:
+                run.thread.start()
             except Exception:
-                if run.thread.ident is None: del self.runs[run.id]
+                if run.thread.ident is None:
+                    # No worker could have attempted bind, detach, or launch.
+                    del self.runs[run.id]
                 raise Failure('startup_failed','Run worker could not start; no automatic retry was attempted') from None
+        if run.managed is not None and detached:
+            # Publish the handle after Host can address it, including during the probe.
+            while not run.managed_bound.wait(.05):
+                if _job.cancelled.is_set():
+                    run.job.cancel()
         return run.info()
     def get(self,identifier):
         with self.lock: run = self.runs.get(identifier)
@@ -202,7 +239,7 @@ class Claude:
             raise Failure('unknown_run','Run belongs to another connection or its result was released or evicted')
         return run
     def once(self,args,job):
-        run = self.get(self.start(args,job)['run_id'])
+        run = self.get(self.start(args,job,detached=False)['run_id'])
         while not run.done.wait(.05):
             if job.cancelled.is_set(): run.job.cancel()
         return run.result(args.get('max_events',128))
@@ -213,8 +250,15 @@ class Claude:
         return {**run.info(),**run.events.page(args.get('after_cursor',0),args.get('limit',128),args.get('max_bytes',196608))}
     def cancel(self,args,_job):
         run = self.get(args['run_id'])
-        if not run.done.is_set(): run.job.cancel()
-        return {**run.info(),'cancel_requested':not run.done.is_set()}
+        requested = not run.done.is_set()
+        if requested:
+            if run.managed is not None:
+                if _job.work_invocation is None:
+                    raise Failure('host_execution_required', 'Host did not correlate the Claude cancellation')
+                run.managed.cancel(_job.work_invocation, run.job)
+            else:
+                run.job.cancel()
+        return {**run.info(),'cancel_requested':requested}
     def listing(self,_args,_job):
         with self.lock: runs = list(self.runs.values())
         return {'runs':[r.info() for r in runs]}
@@ -255,13 +299,32 @@ class Claude:
         ]
 
 
-def main():
+class ManagedClaudeMCPServer(MCPServer):
+    def emit(self, message):
+        result = message.get('result')
+        if self.initialized and isinstance(result, dict) and 'protocolVersion' in result:
+            result['capabilities']['experimental'] = {CAPABILITY: True}
+        super().emit(message)
+
+
+def main(*, require_host=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version',action='version',version=VERSION)
     parser.add_argument('--executable',help='Absolute user-owned Claude Code path; otherwise CLAUDE_CODE_EXECUTABLE or PATH')
+    parser.add_argument('--host-vendor-execution',action='store_true',help=argparse.SUPPRESS)
     args = parser.parse_args()
-    claude = Claude(args.executable)
-    MCPServer('claude-mcp-adapter',VERSION,claude.tools(),claude.shutdown,work=claude.work_resources).serve()
+    managed = require_host or args.host_vendor_execution or any(
+        key in os.environ for key in ('COMPUTER_MCP_HOST_CONTEXT', 'COMPUTER_MCP_HOST_FD'))
+    if managed and args.executable:
+        parser.error('Managed Claude selects its reviewed Host dependency')
+    channel = VendorChannel() if managed else None
+    claude = Claude(args.executable, channel)
+    try:
+        server = ManagedClaudeMCPServer if channel else MCPServer
+        server('claude-mcp-adapter',VERSION,claude.tools(),claude.shutdown,work=claude.work_resources).serve()
+    finally:
+        if channel is not None:
+            channel.close()
 
 
 if __name__=='__main__': main()

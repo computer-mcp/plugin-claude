@@ -19,6 +19,7 @@ INCLUDE = (
     *README_ASSETS,
     "computer-mcp-plugin.toml",
     "cli-tree.json",
+    "claude-vendor-execution.json",
     "bin",
     "skills",
     "README.md",
@@ -67,6 +68,13 @@ def package_bytes(root: Path):
     if manifest["id"] != "claude":
         raise ValueError("Unexpected plugin identity")
     json.loads(contents["cli-tree.json"])
+    for contribution in manifest["mcp"]:
+        managed = contribution.get("vendor_execution")
+        if managed is None:
+            continue
+        for path, expected in managed["files"].items():
+            if path not in contents or hashlib.sha256(contents[path]).hexdigest() != expected:
+                raise ValueError(f"Managed Claude file does not match its reviewed digest: {path}")
 
     output = io.BytesIO()
     with zipfile.ZipFile(
