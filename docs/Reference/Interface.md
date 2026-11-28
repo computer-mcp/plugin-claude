@@ -45,8 +45,10 @@ The manifest requests a custom sandbox network ceiling with three exact hosts.
 Anthropic's current network reference identifies `api.anthropic.com` for Claude
 API requests, `platform.claude.com` for first-party OAuth token exchange and
 refresh, and `claude.ai` for account authentication. The pinned 2.1.59 executable
-contains the `platform.claude.com` token endpoint. Sign-in, token refresh, and
-authenticated model traffic in the Host sandbox require live account acceptance.
+contains the `platform.claude.com` token endpoint. Live account verification is
+required to validate token refresh and authenticated model traffic in the Host
+sandbox. See the [installation guide](Installation.md#claude-code-sign-in) for
+first sign-in availability.
 [Claude Code network access requirements](https://code.claude.com/docs/en/network-config#network-access-requirements)
 
 The Host reviews the ceiling at enablement and requires fresh approval for a

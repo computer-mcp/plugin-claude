@@ -16,12 +16,18 @@ Computer MCP publishes plugin configuration changes to connected clients atomica
 
 ## Claude Code sign-in
 
-Use the native `claude auth login` command to sign in. For standalone runs,
-use the account state of the shell that launches the adapter. For installed runs,
-sign-in must use the registered provider's isolated state. The Host supplies a
-persistent provider HOME, cache and state paths, plus per-execution scratch.
-An ordinary terminal login uses its own state, and the plugin exposes no login
-tool or credential import. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+For standalone Claude Code or direct use of `bin/claude-mcp-adapter`, run
+`claude auth login` in a terminal with the same Claude Code account state as the
+standalone process. The command signs in to the state selected by its launching
+environment. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+
+On a fresh Host install, you can bind the executable, configure and enable the
+plugin, and check installation and tool discovery while signed out. Installed CLI
+and MCP runs use the registered provider's isolated state, with a Host-managed
+HOME, cache and state paths, plus per-execution scratch. A standalone terminal
+login stays in the terminal's Claude Code state. The current Host and installed
+plugin expose no command for first sign-in in the provider state, so authenticated
+model runs remain unavailable on a fresh install.
 
 In clean signed-out state, Claude Code 2.1.59 reports `loggedIn: false` and
 `authMethod: "none"` from `claude auth status` and exits with status `1`.

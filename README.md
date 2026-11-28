@@ -50,8 +50,9 @@ from `Examples/settings.json`.
 ## Install
 
 1. Install Claude Code 2.1.59 and provide Python 3.13 or newer on the Computer MCP launch
-   `PATH`. Sign in yourself with `claude auth login` in the state used by the executable.
-   Installed runs use the Host-managed provider state. See the
+   `PATH`. For standalone use, run `claude auth login` in a terminal with the same
+   Claude Code state as the standalone process. A fresh Host install supports setup and
+   discovery, but first sign-in for its isolated provider state is unavailable. See the
    [installation guide](docs/Reference/Installation.md#claude-code-sign-in).
 2. Build the archive:
 
@@ -92,7 +93,8 @@ semantics.
 ## Requirements
 
 - Computer MCP with managed print execution support on an arm64 computer.
-- Claude Code, installed and authenticated separately; its version must match `cli-tree.json`.
+- Claude Code installed separately at the version specified in `cli-tree.json`.
+- Claude Code authentication in the execution environment for model runs.
 - Python 3.13 or newer.
 
 ## Documentation
